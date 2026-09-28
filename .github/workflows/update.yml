@@ -32,10 +32,29 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Compute cache key (data changes ~monthly)
+        id: datekey
+        run: echo "ym=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+      # Data only changes when Prefeitura publishes a new monthly sheet, so a
+      # run triggered just to redeploy index.html (or any run within the same
+      # month + unchanged pipeline scripts) can reuse the parquet already
+      # built this month instead of re-downloading ~175MB of Excel files.
+      # Bust it early by editing the scripts (hashFiles changes the key) or
+      # by deleting the cache entry from Settings → Actions → Caches.
+      - name: Cache built parquet
+        id: cache-parquet
+        uses: actions/cache@v4
+        with:
+          path: itbi_sp_5y.parquet
+          key: itbi-parquet-${{ steps.datekey.outputs.ym }}-${{ hashFiles('scripts/download_itbi.py', 'scripts/preprocess_itbi.py') }}
+
       - name: Download ITBI Excel files (last 5 years)
+        if: steps.cache-parquet.outputs.cache-hit != 'true'
         run: python scripts/download_itbi.py
 
       - name: Preprocess → parquet
+        if: steps.cache-parquet.outputs.cache-hit != 'true'
         run: python scripts/preprocess_itbi.py
 
       - name: Prepare site artifact
