@@ -526,7 +526,7 @@
       if (rua) parts.push(`upper(coalesce(logradouro, '')) LIKE '%${esc(rua)}%'`);
 
       const num = $("#f-num").value.replace(/\D/g, "");
-      if (num) parts.push(`CAST(numero AS VARCHAR) = '${esc(num)}'`);
+      if (num) parts.push(`numero = ${+num}`);
 
       const bairro = $("#f-bairro").value.trim().toUpperCase();
       if (bairro) parts.push(`upper(coalesce(bairro, '')) LIKE '%${esc(bairro)}%'`);
