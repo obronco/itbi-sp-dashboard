@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-import urllib.request
+from curl_cffi import requests
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -31,11 +31,11 @@ YEAR_URLS: dict[int, str] = {
     2026: "https://prefeitura.sp.gov.br/documents/d/fazenda/guias-de-itbi-pagas-27082026-xls-xlsx",
 }
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
+# Browser to impersonate at the TLS/HTTP2 fingerprint level (curl_cffi).
+# The Prefeitura's edge appears to 403 requests whose TLS ClientHello doesn't
+# match a real browser (plain urllib/requests get blocked; GitHub-hosted
+# runners hit this reliably even though the URLs are otherwise reachable).
+IMPERSONATE = "chrome124"
 
 MIN_BYTES = 1_000_000  # reject tiny / error pages
 MAX_RETRIES = 3
@@ -48,9 +48,14 @@ def download_one(year: int, url: str, dest: Path) -> None:
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                data = resp.read()
+            resp = requests.get(
+                url,
+                impersonate=IMPERSONATE,
+                timeout=180,
+                allow_redirects=True,
+            )
+            resp.raise_for_status()
+            data = resp.content
             if len(data) < MIN_BYTES:
                 raise RuntimeError(
                     f"Download too small ({len(data)} bytes) — likely an error page"
