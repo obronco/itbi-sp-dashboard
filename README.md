@@ -49,8 +49,9 @@ Official page: https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31
 
 - Each row is a paid DTI in the **payment month** (sheet name), not necessarily the transaction month.
 - Self-declared values; rural properties and PPI parcelamentos are excluded by the source.
-- `preco_m2` is computed only when built area > 0 and the result is between R$ 100 and R$ 150 000.
+- `preco_m2` is computed only when area (built area, or land area for `terreno`) is within the segment's expected band and the result is between R$ 100 and R$ 150 000.
 - Means are sensitive to large corporate deals; prefer medians.
+- Exact re-published DTI rows (same property, date, value and street) are deduplicated before the parquet is written.
 
 ## License / attribution
 

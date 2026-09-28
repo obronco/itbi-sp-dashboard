@@ -478,9 +478,11 @@
       URL.revokeObjectURL(worker_url);
       conn = await db.connect();
 
-      msg.textContent = "Baixando parquet (≈32 MB)…";
+      msg.textContent = "Baixando parquet…";
       const res = await fetch(PARQUET_URL);
       if (!res.ok) throw new Error("Falha ao baixar " + PARQUET_URL + " (" + res.status + ")");
+      const len = +res.headers.get("content-length");
+      if (len) msg.textContent = `Baixando parquet (≈${(len / 1e6).toFixed(0)} MB)…`;
       const buf = await res.arrayBuffer();
       await db.registerFileBuffer("itbi.parquet", new Uint8Array(buf));
 
@@ -611,7 +613,7 @@
     <div class="kpi"><div class="label">VGV</div><div class="value">${fmtCompact(k.vgv)}</div><div class="hint">${fmtMoney(k.vgv)}</div></div>
     <div class="kpi"><div class="label">Mediana valor</div><div class="value">${fmtMoney(k.med_val)}</div></div>
     <div class="kpi"><div class="label">Média valor</div><div class="value">${fmtMoney(k.avg_val)}</div><div class="hint">sensível a outliers</div></div>
-    <div class="kpi"><div class="label">Mediana R$/m²</div><div class="value">${fmtMoney(k.med_m2)}</div><div class="hint">n=${fmt(k.n_m2)}</div></div>
+    <div class="kpi"><div class="label">Mediana R$/m²</div><div class="value">${fmtMoney(k.med_m2)}</div><div class="hint">n=${fmt(k.n_m2)} (${fmt(100 * k.n_m2 / (k.n || 1), 0)}% com preço)</div></div>
     <div class="kpi"><div class="label">Com financiamento</div><div class="value">${fmt(100 * k.n_fin / (k.n || 1), 1)}%</div><div class="hint">${fmt(k.n_fin)} deals</div></div>
   `;
 
@@ -764,7 +766,7 @@
       cep,
       coalesce(segmento, '') AS segmento,
       valor_transacao,
-      area_construida,
+      area_m2,
       preco_m2,
       proporcao_pct
     FROM v_base
@@ -792,7 +794,7 @@
       <td>${r.cep || "—"}</td>
       <td>${r.segmento || "—"}</td>
       <td class="num">${fmtMoney(r.valor_transacao)}</td>
-      <td class="num">${r.area_construida != null ? fmt(r.area_construida) : "—"}</td>
+      <td class="num">${r.area_m2 != null ? fmt(r.area_m2) : "—"}</td>
       <td class="num">${r.preco_m2 != null ? fmtMoney(r.preco_m2) : "—"}</td>
       <td class="num">${r.proporcao_pct != null ? fmt(r.proporcao_pct, 1) : "—"}</td>
     </tr>`;

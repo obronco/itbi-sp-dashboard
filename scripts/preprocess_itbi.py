@@ -145,6 +145,12 @@ AREA_BANDS = {
     "predio_misto_nao_res": (50, 2000),
     "loja": (15, 800),
     "loja_residencia": (30, 1000),
+    "terreno": (150, 50_000),  # area_terreno, not area_construida — see enrich()
+    "industria": (200, 40_000),
+    "deposito": (40, 20_000),
+    "escola": (150, 40_000),
+    "oficina": (50, 3_500),
+    "hotel": (50, 20_000),
     "default": (20, 600),
 }
 
@@ -190,6 +196,7 @@ BAIRRO_NORM = {
     "BROOKLIN NOVO": "BROOKLIN",
 }
 
+# Dropped before enrich() — not used to derive anything downstream.
 DROP_COLS = [
     "referencia",
     "cartorio",
@@ -199,7 +206,18 @@ DROP_COLS = [
     "acc",
     "valor_venal",
     "valor_venal_prop",
+    "base_calculo",
+    "valor_financiado",
+    "fracao_ideal",
+    "padrao",
+    "desc_padrao",
+    "desc_uso",
 ]
+
+# Dropped after enrich() — needed there (uso → segmento; area_construida /
+# area_terreno → area_m2; bairro_raw → bairro) but not queried by the dashboard
+# as raw columns, so no reason to ship them in the parquet.
+POST_ENRICH_DROP_COLS = ["uso", "bairro_raw", "area_construida", "area_terreno"]
 
 
 def clean_cep(s: pd.Series) -> pd.Series:
@@ -240,16 +258,19 @@ def map_segmento(uso: pd.Series) -> pd.Series:
 def normalize_proporcao_pct(proporcao: pd.Series) -> pd.Series:
     """
     Map raw proporcao into a 0–100 percentage when possible.
-    - (0, 1]  → treat as fraction → ×100
-    - (1, 100] → already percent
-    - else    → NA (noise / unknown scale)
+    - (0, 1]      → treat as fraction → ×100
+    - (1, 100]    → already percent
+    - (100, 10000] → percent ×100 (common for fractional shares, e.g. 3333 = 1/3) → ÷100
+    - else        → NA (noise / unknown scale)
     """
     p = pd.to_numeric(proporcao, errors="coerce")
     out = pd.Series(np.nan, index=p.index, dtype="float64")
     frac = (p > 0) & (p <= 1)
     pct = (p > 1) & (p <= 100)
+    scaled = (p > 100) & (p <= 10_000)
     out = out.mask(frac, p * 100.0)
     out = out.mask(pct, p)
+    out = out.mask(scaled, p / 100.0)
     # exact 100 already covered by pct; keep 100
     out = out.mask(p == 100, 100.0)
     return out
@@ -289,7 +310,13 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     df["segmento"] = map_segmento(df["uso"])
 
     # --- area & price ---
-    area = pd.to_numeric(df["area_construida"], errors="coerce").replace(0, np.nan)
+    # Land parcels carry area in area_terreno, not area_construida (which is
+    # ~always null/0 for terreno) — use the field that actually has the data.
+    area_construida = pd.to_numeric(df["area_construida"], errors="coerce").replace(0, np.nan)
+    area_terreno = pd.to_numeric(df["area_terreno"], errors="coerce").replace(0, np.nan)
+    is_terreno = df["segmento"] == "terreno"
+    area = area_construida.where(~is_terreno, area_terreno)
+    df["area_m2"] = area
     df["area_util_ok"] = area_band_ok(df["segmento"], area)
 
     # Raw R$/m² only when area is in segment band (avoids building-scale SQL)
@@ -311,6 +338,21 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     df["is_predio_escritorio"] = df["segmento"] == "predio_escritorio"
 
     return df
+
+
+def dedup_transactions(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop exact re-published DTI rows: same property (sql), same transaction
+    date, same declared value, same street — appearing more than once, either
+    within one monthly sheet or re-listed across sheets. Rows without a sql
+    (kept when at least logradouro is present) are left untouched since
+    identity can't be verified for them.
+    """
+    key = ["sql", "data_transacao", "valor_transacao", "logradouro"]
+    has_sql = df["sql"].notna()
+    with_sql = df.loc[has_sql].drop_duplicates(subset=key, keep="first")
+    without_sql = df.loc[~has_sql]
+    return pd.concat([with_sql, without_sql], ignore_index=True)
 
 
 def process_sheet(df: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
@@ -389,6 +431,7 @@ def process_sheet(df: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
 
     df = df.drop(columns=[c for c in DROP_COLS if c in df.columns], errors="ignore")
     df = enrich(df)
+    df = df.drop(columns=[c for c in POST_ENRICH_DROP_COLS if c in df.columns], errors="ignore")
     return df
 
 
@@ -451,17 +494,19 @@ def main():
 
     full = pd.concat(all_frames, ignore_index=True)
 
+    n_before = len(full)
+    full = dedup_transactions(full)
+    n_dropped = n_before - len(full)
+    print(f"\nDedup: dropped {n_dropped:,} duplicate rows ({100 * n_dropped / n_before:.1f}%)")
+
     str_cols = [
         "sql",
         "cep",
         "logradouro",
         "complemento",
         "bairro",
-        "bairro_raw",
         "natureza",
         "tipo_financiamento",
-        "desc_uso",
-        "desc_padrao",
         "ano_mes_pag",
         "segmento",
     ]
