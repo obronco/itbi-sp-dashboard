@@ -149,13 +149,46 @@ AREA_BANDS = {
 }
 
 # Bairro values that are really complemento / building parts
+# Bairro values that are really complemento / building / unit labels
 BAIRRO_LIXO_RE = re.compile(
-    r"^(TORRE|BLOCO|BL\.?|AP|APTO|APT|SALA|SL|LJ|LOJA|CJ|CONJ|CONJUNTO|"
-    r"ANDAR|AN\.?|PAV|ESCRIT|ESCR|COBERTURA|COB|CASA|CS|FUNDOS|FD|"
-    r"SOBRELOJA|SLJ|BOX|VAGA|VG|DEPOSITO|DEP)\b"
-    r"|^[\d\s\.\-/]+$",
+    r"^(?:"
+    r"TORRE|BLOCO|BL\.?|"
+    r"AP|APTO|APT|"
+    r"SALA|SL\.?|ESCRIT(?:ORIO)?|ESCR\.?|"
+    r"LJ\.?|LOJA|SOBRELOJA|SLJ|"
+    r"CJ\.?|CONJ(?:UNTO)?|"
+    r"ANDAR|AN\.?|PAV(?:IMENTO)?|"
+    r"COBERTURA|COB\.?|DUPLEX|TRIPLEX|COBERT|"
+    r"CASA|CS\.?|FUNDOS|FD\.?|"
+    r"BOX|VAGA|VAGAS|VG\.?|"
+    r"DEPOSITO|DEP\.?|"
+    r"ED(?:IFICIO)?\.?|EDIF(?:ICIO)?\.?|"
+    r"CONDOMINIO|COND\.?|"
+    r"UNIDADE|UH\.?|APTOS?"
+    r")\b"
+    r"|\b(?:VAGAS?|DUPLEX|TRIPLEX)\b"
+    r"|^[\d\s\.\-/]+$"
+    r"|\d\s*VAGAS?",
     re.IGNORECASE,
 )
+
+# Light normalization of common neighborhood spellings (after junk filter)
+BAIRRO_NORM = {
+    "JD PAULISTA": "JARDIM PAULISTA",
+    "JD. PAULISTA": "JARDIM PAULISTA",
+    "JARDIM PAULISTA": "JARDIM PAULISTA",
+    "ITAIM": "ITAIM BIBI",
+    "ITAIM BIBI": "ITAIM BIBI",
+    "ITAIM  BIBI": "ITAIM BIBI",
+    "CHACARA ITAIM": "ITAIM BIBI",
+    "JD AMERICA": "JARDIM AMERICA",
+    "JD. AMERICA": "JARDIM AMERICA",
+    "VILA OLIMPIA": "VILA OLIMPIA",
+    "VL OLIMPIA": "VILA OLIMPIA",
+    "VL. OLIMPIA": "VILA OLIMPIA",
+    "BROOKLIN PAULISTA": "BROOKLIN",
+    "BROOKLIN NOVO": "BROOKLIN",
+}
 
 DROP_COLS = [
     "referencia",
@@ -188,10 +221,16 @@ def clean_bairro(s: pd.Series) -> pd.Series:
     """Keep only values that look like real neighborhood names."""
     out = s.astype("string").str.strip()
     out = out.replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
-    bad = out.notna() & out.str.match(BAIRRO_LIXO_RE, na=False)
-    # also drop very short tokens and pure codes
+    # collapse internal whitespace
+    out = out.str.replace(r"\s+", " ", regex=True)
+    bad = out.notna() & out.str.contains(BAIRRO_LIXO_RE, na=False)
     bad = bad | (out.str.len() < 3)
-    return out.mask(bad, other=pd.NA)
+    out = out.mask(bad, other=pd.NA)
+    # normalize known aliases
+    upper = out.str.upper()
+    mapped = upper.map(BAIRRO_NORM)
+    out = mapped.fillna(out)
+    return out
 
 
 def map_segmento(uso: pd.Series) -> pd.Series:
