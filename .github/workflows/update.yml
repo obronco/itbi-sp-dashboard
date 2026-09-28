@@ -1,0 +1,62 @@
+name: Update ITBI dashboard
+
+on:
+  schedule:
+    # 5th of each month at 12:00 UTC ≈ 09:00 BRT
+    - cron: "0 12 5 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download ITBI Excel files (last 5 years)
+        run: python scripts/download_itbi.py
+
+      - name: Preprocess → parquet
+        run: python scripts/preprocess_itbi.py
+
+      - name: Prepare site artifact
+        run: |
+          mkdir -p site
+          cp index.html site/
+          cp itbi_sp_5y.parquet site/
+          ls -lh site/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

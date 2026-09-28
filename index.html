@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ITBI São Paulo — Dashboard (5 anos)</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --orange: #f59e0b;
+      --red: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      min-height: 100vh;
+    }
+
+    header {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1rem;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    header h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    header .sub {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .status {
+      margin-left: auto;
+      font-size: 0.8rem;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--border);
+    }
+
+    .status.ok {
+      border-color: var(--green);
+      color: var(--green);
+    }
+
+    .status.loading {
+      border-color: var(--orange);
+      color: var(--orange);
+    }
+
+    .status.err {
+      border-color: var(--red);
+      color: var(--red);
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      padding: 1rem 1.5rem;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .filters label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .filters select,
+    .filters input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.45rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      min-width: 120px;
+    }
+
+    .filters button {
+      align-self: flex-end;
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 0.5rem 1.1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    .filters button:hover {
+      filter: brightness(1.1);
+    }
+
+    .filters button.secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    main {
+      padding: 1.25rem 1.5rem 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0.85rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .kpi {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+
+    .kpi .label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .kpi .value {
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin-top: 0.25rem;
+    }
+
+    .kpi .hint {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 0.15rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+      min-height: 280px;
+    }
+
+    .card h3 {
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+
+    .card.full {
+      grid-column: 1 / -1;
+    }
+
+    canvas {
+      max-height: 260px;
+      width: 100% !important;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+    }
+
+    td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    tr:hover td {
+      background: rgba(59, 130, 246, 0.08);
+    }
+
+    .note {
+      margin-top: 1.5rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .note a {
+      color: var(--accent);
+    }
+
+    #loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 20, 25, 0.85);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      gap: 1rem;
+    }
+
+    #loading-overlay.hidden {
+      display: none;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <div id="load-msg">Carregando DuckDB-WASM…</div>
+  </div>
+
+  <header>
+    <div>
+      <h1>ITBI São Paulo</h1>
+      <div class="sub">Transações imobiliárias com recolhimento de ITBI · 2022–2026</div>
+    </div>
+    <div id="status" class="status loading">inicializando</div>
+  </header>
+
+  <div class="filters">
+    <label>CEP
+      <input id="f-cep" type="text" inputmode="numeric" placeholder="01310 ou 01310100" style="min-width:130px" />
+    </label>
+    <label>Logradouro (rua)
+      <input id="f-rua" type="text" placeholder="ex: AV PAULISTA" style="min-width:160px" />
+    </label>
+    <label>Nº (opcional)
+      <input id="f-num" type="text" placeholder="1000" style="min-width:80px" />
+    </label>
+    <label>Bairro (contém)
+      <input id="f-bairro" type="text" placeholder="ex: PINHEIROS" />
+    </label>
+    <label>Segmento
+      <select id="f-segmento">
+        <option value="">Todos</option>
+        <option value="sala_condominio">Sala / escritório (condo)</option>
+        <option value="predio_escritorio">Prédio de escritório</option>
+        <option value="apt_condominio">Apartamento (condo)</option>
+        <option value="loja_condominio">Loja em condomínio</option>
+        <option value="loja">Loja</option>
+        <option value="residencia">Residência</option>
+        <option value="terreno">Terreno</option>
+        <option value="garagem_residencial">Garagem residencial</option>
+        <option value="garagem_escritorio">Garagem escritório</option>
+      </select>
+    </label>
+    <label>Ano pagamento
+      <select id="f-ano" multiple size="1" style="min-width:140px"></select>
+    </label>
+    <label>Mês
+      <select id="f-mes">
+        <option value="">Todos</option>
+        <option value="1">Jan</option>
+        <option value="2">Fev</option>
+        <option value="3">Mar</option>
+        <option value="4">Abr</option>
+        <option value="5">Mai</option>
+        <option value="6">Jun</option>
+        <option value="7">Jul</option>
+        <option value="8">Ago</option>
+        <option value="9">Set</option>
+        <option value="10">Out</option>
+        <option value="11">Nov</option>
+        <option value="12">Dez</option>
+      </select>
+    </label>
+    <label>Natureza
+      <select id="f-natureza">
+        <option value="">Todas</option>
+      </select>
+    </label>
+    <label>Valor mín (R$)
+      <input id="f-vmin" type="number" placeholder="0" />
+    </label>
+    <label>Valor máx (R$)
+      <input id="f-vmax" type="number" placeholder="" />
+    </label>
+    <label style="flex-direction:row;align-items:center;gap:0.4rem;margin-top:1.1rem">
+      <input id="f-mercado" type="checkbox" checked />
+      <span style="text-transform:none;letter-spacing:0;font-size:0.85rem;color:var(--text)">Só mercado_ok</span>
+    </label>
+    <button id="btn-apply">Aplicar</button>
+    <button id="btn-reset" class="secondary">Limpar</button>
+  </div>
+
+  <main>
+    <div class="kpis" id="kpis"></div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Volume e VGV mensal (pagamento)</h3>
+        <canvas id="chart-ts"></canvas>
+      </div>
+      <div class="card">
+        <h3>Preço mediano R$/m² (quando disponível)</h3>
+        <canvas id="chart-m2"></canvas>
+      </div>
+      <div class="card">
+        <h3>Top bairros por volume</h3>
+        <div style="max-height:260px;overflow:auto">
+          <table id="tbl-bairros">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Bairro</th>
+                <th>Transações</th>
+                <th>Mediana R$</th>
+                <th>Med. R$/m²</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Distribuição por natureza</h3>
+        <canvas id="chart-nat"></canvas>
+      </div>
+      <div class="card full">
+        <h3>Distribuição de valores de transação</h3>
+        <canvas id="chart-hist" height="120"></canvas>
+      </div>
+      <div class="card full">
+        <h3>Transações (até 100) — útil com CEP / rua</h3>
+        <div style="max-height:360px;overflow:auto">
+          <table id="tbl-tx">
+            <thead>
+              <tr>
+                <th>Pag.</th>
+                <th>Data neg.</th>
+                <th>Endereço</th>
+                <th>CEP</th>
+                <th>Segmento</th>
+                <th>Valor</th>
+                <th>Área</th>
+                <th>R$/m²</th>
+                <th>%</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <p class="note">
+      Fonte: <a href="https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31501" target="_blank"
+        rel="noopener">Secretaria Municipal da Fazenda — Dados das Transações Imobiliárias (ITBI)</a>.
+      Cada linha corresponde a uma DTI paga no mês de referência (não necessariamente a data da transação).
+      Valores declarados pelo contribuinte; sem imóveis rurais nem parcelamentos PPI.
+      Preço/m² só quando área está na faixa do segmento e o resultado fica entre R$ 100 e R$ 150.000. Marque “Só
+      mercado_ok” para compra e venda + transferência total + área útil (recomendado para preços de mercado). Busque por
+      CEP (5–8 dígitos) ou nome do logradouro para ver negócios no seu entorno.
+      Dados processados localmente via DuckDB-WASM — nenhum dado sai do seu navegador.
+    </p>
+  </main>
+
+  <script type="module">
+    const PARQUET_URL = "./itbi_sp_5y.parquet";
+
+    const $ = (s) => document.querySelector(s);
+    const fmt = (n, d = 0) => n == null || Number.isNaN(n) ? "—" :
+      new Intl.NumberFormat("pt-BR", { maximumFractionDigits: d }).format(n);
+    const fmtMoney = (n) => n == null || Number.isNaN(n) ? "—" :
+      new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }).format(n);
+    const fmtCompact = (n) => n == null || Number.isNaN(n) ? "—" :
+      new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(n);
+
+    let db, conn;
+    let charts = {};
+
+    async function initDuckDB() {
+      const msg = $("#load-msg");
+      msg.textContent = "Carregando DuckDB-WASM…";
+      // +esm rebundle resolves apache-arrow for the browser
+      const mod = await import(
+        "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm"
+      );
+      const {
+        getJsDelivrBundles,
+        selectBundle,
+        AsyncDuckDB,
+        ConsoleLogger,
+      } = mod;
+      if (typeof getJsDelivrBundles !== "function" || typeof selectBundle !== "function") {
+        console.error("DuckDB module:", mod);
+        throw new Error(
+          "DuckDB-WASM ESM load failed (getJsDelivrBundles/selectBundle missing). " +
+          "Keys: " + Object.keys(mod).join(", ")
+        );
+      }
+      const bundles = getJsDelivrBundles();
+      const bundle = await selectBundle(bundles);
+      // Worker must be same-origin → wrap CDN worker URL in a Blob
+      const worker_url = URL.createObjectURL(
+        new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
+      );
+      const worker = new Worker(worker_url);
+      const logger = new ConsoleLogger();
+      db = new AsyncDuckDB(logger, worker);
+      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+      URL.revokeObjectURL(worker_url);
+      conn = await db.connect();
+
+      msg.textContent = "Baixando parquet (≈32 MB)…";
+      const res = await fetch(PARQUET_URL);
+      if (!res.ok) throw new Error("Falha ao baixar " + PARQUET_URL + " (" + res.status + ")");
+      const buf = await res.arrayBuffer();
+      await db.registerFileBuffer("itbi.parquet", new Uint8Array(buf));
+
+      msg.textContent = "Registrando tabela…";
+      await conn.query(`
+    CREATE TABLE itbi AS
+    SELECT * FROM read_parquet('itbi.parquet');
+  `);
+
+      // useful indexes-ish via views
+      await conn.query(`
+    CREATE VIEW v_base AS
+    SELECT
+      *,
+      CASE WHEN proporcao BETWEEN 0.01 AND 100.5 THEN proporcao ELSE NULL END AS proporcao_ok
+    FROM itbi
+    WHERE valor_transacao > 0;
+  `);
+    }
+
+    function esc(s) {
+      return String(s).replace(/'/g, "''");
+    }
+
+    function whereClause() {
+      const parts = ["1=1"];
+      const anos = [...$("#f-ano").selectedOptions].map(o => o.value).filter(Boolean);
+      if (anos.length) parts.push(`ano_pag IN (${anos.join(",")})`);
+      const mes = $("#f-mes").value;
+      if (mes) parts.push(`mes_pag = ${+mes}`);
+
+      // CEP: digits only; 8 = exact, 5–7 = prefix (neighborhood-ish)
+      const cepRaw = $("#f-cep").value.replace(/\D/g, "");
+      if (cepRaw.length >= 8) {
+        parts.push(`cep = '${esc(cepRaw.slice(0, 8))}'`);
+      } else if (cepRaw.length >= 5) {
+        parts.push(`cep LIKE '${esc(cepRaw)}%'`);
+      }
+
+      const rua = $("#f-rua").value.trim().toUpperCase();
+      if (rua) parts.push(`upper(coalesce(logradouro, '')) LIKE '%${esc(rua)}%'`);
+
+      const num = $("#f-num").value.replace(/\D/g, "");
+      if (num) parts.push(`CAST(numero AS VARCHAR) = '${esc(num)}'`);
+
+      const bairro = $("#f-bairro").value.trim().toUpperCase();
+      if (bairro) parts.push(`upper(coalesce(bairro, '')) LIKE '%${esc(bairro)}%'`);
+
+      const seg = $("#f-segmento").value;
+      if (seg) parts.push(`segmento = '${esc(seg)}'`);
+
+      const nat = $("#f-natureza").value;
+      if (nat) parts.push(`natureza = '${esc(nat)}'`);
+
+      if ($("#f-mercado").checked) parts.push(`mercado_ok = true`);
+
+      const vmin = $("#f-vmin").value;
+      if (vmin !== "") parts.push(`valor_transacao >= ${+vmin}`);
+      const vmax = $("#f-vmax").value;
+      if (vmax !== "") parts.push(`valor_transacao <= ${+vmax}`);
+      return parts.join(" AND ");
+    }
+
+    async function q(sql) {
+      const r = await conn.query(sql);
+      return r.toArray().map(row => {
+        const o = {};
+        for (const k of r.schema.fields.map(f => f.name)) {
+          let v = row[k];
+          if (typeof v === "bigint") v = Number(v);
+          o[k] = v;
+        }
+        return o;
+      });
+    }
+
+    async function loadFilterOptions() {
+      const anos = await q("SELECT DISTINCT ano_pag FROM itbi ORDER BY 1");
+      const sel = $("#f-ano");
+      sel.innerHTML = "";
+      anos.forEach(r => {
+        const o = document.createElement("option");
+        o.value = r.ano_pag;
+        o.textContent = r.ano_pag;
+        o.selected = true;
+        sel.appendChild(o);
+      });
+      // multi-select UX: make it a normal multi
+      sel.size = Math.min(5, anos.length);
+      sel.multiple = true;
+
+      const nats = await q("SELECT natureza, count(*) c FROM itbi GROUP BY 1 ORDER BY c DESC LIMIT 20");
+      const sn = $("#f-natureza");
+      nats.forEach(r => {
+        const o = document.createElement("option");
+        o.value = r.natureza;
+        o.textContent = `${r.natureza} (${fmt(r.c)})`;
+        sn.appendChild(o);
+      });
+
+    }
+
+    function destroyCharts() {
+      Object.values(charts).forEach(c => c.destroy());
+      charts = {};
+    }
+
+    async function refresh() {
+      const w = whereClause();
+      $("#status").textContent = "consultando…";
+      $("#status").className = "status loading";
+
+      // KPIs
+      const k = (await q(`
+    SELECT
+      count(*) AS n,
+      sum(valor_transacao) AS vgv,
+      median(valor_transacao) AS med_val,
+      avg(valor_transacao) AS avg_val,
+      median(preco_m2) AS med_m2,
+      count(preco_m2) AS n_m2,
+      count(tipo_financiamento) AS n_fin
+    FROM v_base WHERE ${w}
+  `))[0];
+
+      $("#kpis").innerHTML = `
+    <div class="kpi"><div class="label">Transações</div><div class="value">${fmt(k.n)}</div></div>
+    <div class="kpi"><div class="label">VGV</div><div class="value">${fmtCompact(k.vgv)}</div><div class="hint">${fmtMoney(k.vgv)}</div></div>
+    <div class="kpi"><div class="label">Mediana valor</div><div class="value">${fmtMoney(k.med_val)}</div></div>
+    <div class="kpi"><div class="label">Média valor</div><div class="value">${fmtMoney(k.avg_val)}</div><div class="hint">sensível a outliers</div></div>
+    <div class="kpi"><div class="label">Mediana R$/m²</div><div class="value">${fmtMoney(k.med_m2)}</div><div class="hint">n=${fmt(k.n_m2)}</div></div>
+    <div class="kpi"><div class="label">Com financiamento</div><div class="value">${fmt(100 * k.n_fin / (k.n || 1), 1)}%</div><div class="hint">${fmt(k.n_fin)} deals</div></div>
+  `;
+
+      destroyCharts();
+
+      // Time series
+      const ts = await q(`
+    SELECT ano_mes_pag AS ym,
+           count(*) AS n,
+           sum(valor_transacao)/1e9 AS vgv_bi,
+           median(preco_m2) AS med_m2
+    FROM v_base WHERE ${w}
+    GROUP BY 1 ORDER BY 1
+  `);
+
+      charts.ts = new Chart($("#chart-ts"), {
+        type: "bar",
+        data: {
+          labels: ts.map(r => r.ym),
+          datasets: [
+            { label: "Transações", data: ts.map(r => r.n), backgroundColor: "rgba(59,130,246,0.7)", yAxisID: "y" },
+            { label: "VGV (R$ bi)", data: ts.map(r => r.vgv_bi), type: "line", borderColor: "#22c55e", backgroundColor: "transparent", yAxisID: "y1", tension: 0.25 }
+          ]
+        },
+        options: {
+          responsive: true,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            y: { position: "left", ticks: { color: "#8b9bb4" }, grid: { color: "#2d3a4f" } },
+            y1: { position: "right", ticks: { color: "#8b9bb4" }, grid: { drawOnChartArea: false } },
+            x: { ticks: { color: "#8b9bb4", maxRotation: 45 }, grid: { display: false } }
+          },
+          plugins: { legend: { labels: { color: "#e7ecf3" } } }
+        }
+      });
+
+      charts.m2 = new Chart($("#chart-m2"), {
+        type: "line",
+        data: {
+          labels: ts.map(r => r.ym),
+          datasets: [{
+            label: "Mediana R$/m²",
+            data: ts.map(r => r.med_m2),
+            borderColor: "#f59e0b",
+            backgroundColor: "rgba(245,158,11,0.15)",
+            fill: true,
+            tension: 0.25
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            y: { ticks: { color: "#8b9bb4", callback: v => fmt(v) }, grid: { color: "#2d3a4f" } },
+            x: { ticks: { color: "#8b9bb4", maxRotation: 45 }, grid: { display: false } }
+          },
+          plugins: { legend: { display: false } }
+        }
+      });
+
+      // Top bairros
+      const bairros = await q(`
+    SELECT coalesce(bairro, '(sem bairro)') AS bairro,
+           count(*) AS n,
+           median(valor_transacao) AS med_val,
+           median(preco_m2) AS med_m2
+    FROM v_base WHERE ${w}
+    GROUP BY 1
+    ORDER BY n DESC
+    LIMIT 15
+  `);
+      const tb = $("#tbl-bairros tbody");
+      tb.innerHTML = bairros.map((r, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${r.bairro || "—"}</td>
+      <td class="num">${fmt(r.n)}</td>
+      <td class="num">${fmtMoney(r.med_val)}</td>
+      <td class="num">${r.med_m2 != null ? fmtMoney(r.med_m2) : "—"}</td>
+    </tr>
+  `).join("");
+
+      // Natureza pie-ish
+      const nats = await q(`
+    SELECT natureza, count(*) AS n
+    FROM v_base WHERE ${w}
+    GROUP BY 1 ORDER BY n DESC LIMIT 8
+  `);
+      const colors = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4", "#ec4899", "#84cc16"];
+      charts.nat = new Chart($("#chart-nat"), {
+        type: "doughnut",
+        data: {
+          labels: nats.map(r => r.natureza?.slice(0, 40) || "?"),
+          datasets: [{ data: nats.map(r => r.n), backgroundColor: colors }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { position: "right", labels: { color: "#e7ecf3", boxWidth: 12, font: { size: 10 } } }
+          }
+        }
+      });
+
+      // Histogram of values (log-ish buckets)
+      const hist = await q(`
+    SELECT
+      CASE
+        WHEN valor_transacao < 200000 THEN '< 200k'
+        WHEN valor_transacao < 400000 THEN '200–400k'
+        WHEN valor_transacao < 600000 THEN '400–600k'
+        WHEN valor_transacao < 800000 THEN '600–800k'
+        WHEN valor_transacao < 1000000 THEN '800k–1M'
+        WHEN valor_transacao < 2000000 THEN '1–2M'
+        WHEN valor_transacao < 5000000 THEN '2–5M'
+        ELSE '≥ 5M'
+      END AS faixa,
+      count(*) AS n
+    FROM v_base WHERE ${w}
+    GROUP BY 1
+    ORDER BY min(valor_transacao)
+  `);
+      charts.hist = new Chart($("#chart-hist"), {
+        type: "bar",
+        data: {
+          labels: hist.map(r => r.faixa),
+          datasets: [{
+            label: "Transações",
+            data: hist.map(r => r.n),
+            backgroundColor: "rgba(59,130,246,0.75)"
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            y: { ticks: { color: "#8b9bb4" }, grid: { color: "#2d3a4f" } },
+            x: { ticks: { color: "#8b9bb4" }, grid: { display: false } }
+          },
+          plugins: { legend: { display: false } }
+        }
+      });
+
+      // Transaction list (for CEP / street drill-down)
+      const txs = await q(`
+    SELECT
+      ano_mes_pag,
+      data_transacao,
+      coalesce(logradouro, '') AS logradouro,
+      numero,
+      coalesce(complemento, '') AS complemento,
+      coalesce(bairro, '') AS bairro,
+      cep,
+      coalesce(segmento, '') AS segmento,
+      valor_transacao,
+      area_construida,
+      preco_m2,
+      proporcao_pct
+    FROM v_base
+    WHERE ${w}
+    ORDER BY data_transacao DESC NULLS LAST, valor_transacao DESC
+    LIMIT 100
+  `);
+      const tbody = $("#tbl-tx tbody");
+      const fmtDate = (d) => {
+        if (d == null) return "—";
+        try {
+          const dt = (d instanceof Date) ? d : new Date(d);
+          if (Number.isNaN(dt.getTime())) return String(d).slice(0, 10);
+          return dt.toLocaleDateString("pt-BR");
+        } catch { return "—"; }
+      };
+      tbody.innerHTML = txs.map(r => {
+        const end = [r.logradouro, r.numero != null ? r.numero : "", r.complemento]
+          .filter(x => x !== "" && x != null).join(", ");
+        const bairro = r.bairro ? ` <span style="color:var(--muted)">· ${r.bairro}</span>` : "";
+        return `<tr>
+      <td>${r.ano_mes_pag || "—"}</td>
+      <td>${fmtDate(r.data_transacao)}</td>
+      <td>${end || "—"}${bairro}</td>
+      <td>${r.cep || "—"}</td>
+      <td>${r.segmento || "—"}</td>
+      <td class="num">${fmtMoney(r.valor_transacao)}</td>
+      <td class="num">${r.area_construida != null ? fmt(r.area_construida) : "—"}</td>
+      <td class="num">${r.preco_m2 != null ? fmtMoney(r.preco_m2) : "—"}</td>
+      <td class="num">${r.proporcao_pct != null ? fmt(r.proporcao_pct, 1) : "—"}</td>
+    </tr>`;
+      }).join("") || `<tr><td colspan="9" style="color:var(--muted)">Nenhuma transação com os filtros atuais.</td></tr>`;
+
+      $("#status").textContent = `${fmt(k.n)} transações filtradas`;
+      $("#status").className = "status ok";
+    }
+
+    async function main() {
+      try {
+        await initDuckDB();
+        await loadFilterOptions();
+        $("#loading-overlay").classList.add("hidden");
+        $("#status").textContent = "pronto";
+        $("#status").className = "status ok";
+        await refresh();
+      } catch (e) {
+        console.error(e);
+        $("#load-msg").textContent = "Erro: " + e.message;
+        $("#status").textContent = "erro";
+        $("#status").className = "status err";
+      }
+    }
+
+    $("#btn-apply").addEventListener("click", () => refresh());
+    $("#btn-reset").addEventListener("click", () => {
+      [...$("#f-ano").options].forEach(o => o.selected = true);
+      $("#f-mes").value = "";
+      $("#f-cep").value = "";
+      $("#f-rua").value = "";
+      $("#f-num").value = "";
+      $("#f-bairro").value = "";
+      $("#f-segmento").value = "";
+      $("#f-natureza").value = "";
+      $("#f-vmin").value = "";
+      $("#f-vmax").value = "";
+      $("#f-mercado").checked = true;
+      refresh();
+    });
+
+    // Enter key applies filters
+    document.querySelector(".filters").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); refresh(); }
+    });
+
+    main();
+  </script>
+</body>
+
+</html>
