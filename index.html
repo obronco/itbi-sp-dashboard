@@ -372,6 +372,11 @@
         </label>
       </div>
       <div id="rua-hint" class="rua-hint"></div>
+      <label>Área privativa ÷ construída
+        <input id="f-fator" type="text" inputmode="decimal" placeholder="ex: 178/316 ou 0,56" />
+      </label>
+      <div id="fator-hint" class="rua-hint">Opcional. A área do IPTU inclui áreas comuns e vagas; informe a
+        relação do prédio para ver R$/m² privativo.</div>
       <label>Bairro (contém)
         <input id="f-bairro" type="text" placeholder="ex: PINHEIROS" />
       </label>
@@ -441,7 +446,7 @@
         <canvas id="chart-ts"></canvas>
       </div>
       <div class="card">
-        <h3>Preço mediano R$/m² (quando disponível)</h3>
+        <h3>Preço mediano <span class="m2-label">R$/m² construído</span> (quando disponível)</h3>
         <canvas id="chart-m2"></canvas>
       </div>
       <div class="card">
@@ -454,7 +459,7 @@
                 <th>Bairro</th>
                 <th>Transações</th>
                 <th>Mediana R$</th>
-                <th>Med. R$/m²</th>
+                <th>Med. <span class="m2-label">R$/m² constr.</span></th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -481,8 +486,8 @@
                 <th>CEP</th>
                 <th>Segmento</th>
                 <th>Valor</th>
-                <th>Área</th>
-                <th>R$/m²</th>
+                <th><span class="area-label">Área constr.</span></th>
+                <th><span class="m2-label">R$/m² constr.</span></th>
                 <th>%</th>
               </tr>
             </thead>
@@ -497,6 +502,9 @@
         rel="noopener">Secretaria Municipal da Fazenda — Dados das Transações Imobiliárias (ITBI)</a>.
       Cada linha corresponde a uma DTI paga no mês de referência (não necessariamente a data da transação).
       Valores declarados pelo contribuinte; sem imóveis rurais nem parcelamentos PPI.
+      Área e R$/m² usam a “Área Construída” do cadastro de IPTU, que em condomínios inclui a fração das áreas
+      comuns e das vagas — por isso o R$/m² fica abaixo do R$/m² privativo usado em anúncios. Para um prédio
+      específico, informe “Área privativa ÷ construída” (ex.: 178/316) para converter.
       Preço/m² só quando área está na faixa do segmento e o resultado fica entre R$ 100 e R$ 150.000. Marque “Só
       mercado_ok” para compra e venda + transferência total + área útil (recomendado para preços de mercado). Busque por
       CEP (5–8 dígitos) ou nome do logradouro para ver negócios no seu entorno.
@@ -741,6 +749,16 @@
       charts = {};
     }
 
+    // Área privativa ÷ construída (IPTU). Accepts "0,56", "0.56" or "178/316".
+    // Returns null when empty or out of a plausible range.
+    function areaFactor() {
+      const raw = $("#f-fator").value.trim().replace(/,/g, ".");
+      if (!raw) return null;
+      const m = raw.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+      const f = m ? +m[1] / +m[2] : +raw;
+      return Number.isFinite(f) && f >= 0.2 && f <= 1 ? f : NaN;
+    }
+
     // Re-run on every filter change. Only one refresh runs at a time; changes
     // made while one is in flight collapse into a single follow-up run.
     let refreshing = false, refreshPending = false, debounceTimer = null;
@@ -774,6 +792,15 @@
       $("#rua-hint").textContent = rua.hint;
       const w = whereClause(rua.sql);
 
+      const f = areaFactor();
+      const priv = f > 0;
+      const m2 = priv ? `(preco_m2 / ${f})` : "preco_m2";
+      const area = priv ? `(area_m2 * ${f})` : "area_m2";
+      document.querySelectorAll(".m2-label").forEach(e => {
+        e.textContent = priv ? (e.closest("th") ? "R$/m² priv." : "R$/m² privativo") : (e.closest("th") ? "R$/m² constr." : "R$/m² construído");
+      });
+      document.querySelectorAll(".area-label").forEach(e => e.textContent = priv ? "Área priv." : "Área constr.");
+
       // KPIs
       const k = (await q(`
     SELECT
@@ -781,8 +808,9 @@
       sum(valor_transacao) AS vgv,
       median(valor_transacao) AS med_val,
       avg(valor_transacao) AS avg_val,
-      median(preco_m2) AS med_m2,
+      median(${m2}) AS med_m2,
       count(preco_m2) AS n_m2,
+      count(DISTINCT (logradouro, numero)) AS n_end,
       count(tipo_financiamento) AS n_fin
     FROM v_base WHERE ${w}
   `))[0];
@@ -792,7 +820,7 @@
     <div class="kpi"><div class="label">VGV</div><div class="value">${fmtCompact(k.vgv)}</div><div class="hint">${fmtMoney(k.vgv)}</div></div>
     <div class="kpi"><div class="label">Mediana valor</div><div class="value">${fmtMoney(k.med_val)}</div></div>
     <div class="kpi"><div class="label">Média valor</div><div class="value">${fmtMoney(k.avg_val)}</div><div class="hint">sensível a outliers</div></div>
-    <div class="kpi"><div class="label">Mediana R$/m²</div><div class="value">${fmtMoney(k.med_m2)}</div><div class="hint">n=${fmt(k.n_m2)} (${fmt(100 * k.n_m2 / (k.n || 1), 0)}% com preço)</div></div>
+    <div class="kpi"><div class="label">Mediana ${priv ? "R$/m² privativo" : "R$/m² construído"}</div><div class="value">${fmtMoney(k.med_m2)}</div><div class="hint">n=${fmt(k.n_m2)} (${fmt(100 * k.n_m2 / (k.n || 1), 0)}% com preço)</div></div>
     <div class="kpi"><div class="label">Com financiamento</div><div class="value">${fmt(100 * k.n_fin / (k.n || 1), 1)}%</div><div class="hint">${fmt(k.n_fin)} deals</div></div>
   `;
 
@@ -803,7 +831,7 @@
     SELECT ano_mes_pag AS ym,
            count(*) AS n,
            sum(valor_transacao)/1e9 AS vgv_bi,
-           median(preco_m2) AS med_m2
+           median(${m2}) AS med_m2
     FROM v_base WHERE ${w}
     GROUP BY 1 ORDER BY 1
   `);
@@ -834,7 +862,7 @@
         data: {
           labels: ts.map(r => r.ym),
           datasets: [{
-            label: "Mediana R$/m²",
+            label: priv ? "Mediana R$/m² privativo" : "Mediana R$/m² construído",
             data: ts.map(r => r.med_m2),
             borderColor: "#f59e0b",
             backgroundColor: "rgba(245,158,11,0.15)",
@@ -857,7 +885,7 @@
     SELECT coalesce(bairro, '(sem bairro)') AS bairro,
            count(*) AS n,
            median(valor_transacao) AS med_val,
-           median(preco_m2) AS med_m2
+           median(${m2}) AS med_m2
     FROM v_base WHERE ${w}
     GROUP BY 1
     ORDER BY n DESC
@@ -945,8 +973,8 @@
       cep,
       coalesce(segmento, '') AS segmento,
       valor_transacao,
-      area_m2,
-      preco_m2,
+      ${area} AS area_m2,
+      ${m2} AS preco_m2,
       proporcao_pct
     FROM v_base
     WHERE ${w}
@@ -979,6 +1007,21 @@
     </tr>`;
       }).join("") || `<tr><td colspan="9" style="color:var(--muted)">Nenhuma transação com os filtros atuais.</td></tr>`;
 
+      const fh = $("#fator-hint");
+      fh.style.color = "";
+      if (Number.isNaN(f)) {
+        fh.textContent = "Valor inválido — use entre 0,2 e 1 (ex.: 0,56 ou 178/316).";
+        fh.style.color = "var(--orange)";
+      } else if (priv) {
+        fh.textContent = `Fator ${fmt(f, 3)}: área construída × ${fmt(f, 3)}, R$/m² ÷ ${fmt(f, 3)}.`;
+        if (k.n_end > 1) {
+          fh.textContent += ` Atenção: aplicado igualmente a ${fmt(k.n_end)} endereços — só é preciso para um prédio.`;
+          fh.style.color = "var(--orange)";
+        }
+      } else {
+        fh.textContent = "Opcional. A área do IPTU inclui áreas comuns e vagas; informe a relação do prédio para ver R$/m² privativo.";
+      }
+
       $("#status").textContent = `${fmt(k.n)} transações filtradas · ${fmt(performance.now() - t0)} ms`;
       $("#status").className = "status ok";
     }
@@ -1010,6 +1053,7 @@
       $("#f-natureza").value = "";
       $("#f-vmin").value = "";
       $("#f-vmax").value = "";
+      $("#f-fator").value = "";
       $("#f-mercado").checked = true;
       scheduleRefresh();
     });
