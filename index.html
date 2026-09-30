@@ -89,6 +89,18 @@
       border-bottom: 1px solid var(--border);
     }
 
+    .rua-hint {
+      padding: 0.4rem 1.5rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .rua-hint:empty {
+      display: none;
+    }
+
     .filters label {
       display: flex;
       flex-direction: column;
@@ -358,6 +370,7 @@
     <button id="btn-apply">Aplicar</button>
     <button id="btn-reset" class="secondary">Limpar</button>
   </div>
+  <div id="rua-hint" class="rua-hint"></div>
 
   <main>
     <div class="kpis" id="kpis"></div>
@@ -501,13 +514,90 @@
     FROM itbi
     WHERE valor_transacao > 0;
   `);
+
+      // One row per (street, word) for fuzzy logradouro search; connectives dropped
+      await conn.query(`
+    CREATE TABLE rua_words AS
+    SELECT DISTINCT logradouro, w FROM (
+      SELECT logradouro,
+             unnest(string_split(trim(regexp_replace(upper(logradouro), '[^A-Z0-9]+', ' ', 'g')), ' ')) AS w
+      FROM (SELECT DISTINCT logradouro FROM itbi WHERE logradouro IS NOT NULL)
+    )
+    WHERE w NOT IN ('', ${[...RUA_STOPWORDS].map(x => `'${x}'`).join(",")});
+  `);
+    }
+
+    // Full word → abbreviation used by the Prefeitura's logradouro names
+    const RUA_ABBREV = {
+      RUA: "R", AVENIDA: "AV", TRAVESSA: "TV", PRACA: "PC", ALAMEDA: "AL", ESTRADA: "ES",
+      LARGO: "LG", PASSAGEM: "PS", PARQUE: "PQ", VIADUTO: "VD",
+      DOUTOR: "DR", DOUTORA: "DRA", PROFESSOR: "PROF", PROFESSORA: "PROFA", PADRE: "PDE",
+      CORONEL: "CEL", ENGENHEIRO: "ENG", SANTA: "STA", SANTO: "STO", SAO: "S",
+      GENERAL: "GAL", CAPITAO: "CAP", SOLDADO: "SOLD", MINISTRO: "MIN", MONSENHOR: "MONS",
+      VISCONDE: "VISC", TENENTE: "TTE", SARGENTO: "SARG", MAJOR: "MAJ", MARECHAL: "MAL",
+      BRIGADEIRO: "BRIG", SENADOR: "SEN", ALMIRANTE: "ALM", CONSELHEIRO: "CONS",
+      MARQUES: "MARQ", EMBAIXADOR: "EMB", DEPUTADO: "DEP", PRESIDENTE: "PRES",
+      COMANDANTE: "COMTE", ARQUITETO: "ARQ", JORNALISTA: "JORN", GOVERNADOR: "GOV",
+      VEREADOR: "VER", CARDEAL: "CARD", PREFEITO: "PREF",
+    };
+    const RUA_STOPWORDS = new Set(["DE", "DA", "DO", "DOS", "DAS", "E"]);
+
+    // Each token → list of accepted spellings (full word and/or abbreviation)
+    function ruaTokens(raw) {
+      const norm = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase()
+        .replace(/[^A-Z0-9]+/g, " ").replace(/\bNOSSA SENHORA\b/g, "NSRA").trim();
+      if (!norm) return [];
+      return norm.split(" ").filter(t => !RUA_STOPWORDS.has(t)).map(t => {
+        const ab = RUA_ABBREV[t];
+        return ab ? [t, ab] : [t];
+      });
+    }
+
+    function ruaTokenPred(alts, fuzzy) {
+      const ors = [];
+      for (const a of alts) {
+        if (/^\d+$/.test(a) || a.length <= 2) { ors.push(`w = '${a}'`); continue; }
+        ors.push(`starts_with(w, '${a}')`);
+        if (fuzzy && a.length >= 4) {
+          const k = a.length >= 8 ? 2 : 1;
+          ors.push(`(abs(length(w) - ${a.length}) <= ${k} AND damerau_levenshtein(w, '${a}') <= ${k})`);
+        }
+      }
+      return `(${ors.join(" OR ")})`;
+    }
+
+    // Resolve the logradouro box to a set of streets, trying progressively looser
+    // matches: exact name → all words (any order, prefix) → typo-tolerant.
+    async function resolveRua() {
+      const tokens = ruaTokens($("#f-rua").value);
+      if (!tokens.length) return { sql: null, hint: "" };
+      const allWords = (fuzzy) => tokens
+        .map(t => `SELECT logradouro FROM rua_words WHERE ${ruaTokenPred(t, fuzzy)}`)
+        .join(" INTERSECT ");
+      const tiers = [
+        { label: "nome exato", sql: `${allWords(false)} INTERSECT SELECT logradouro FROM rua_words GROUP BY 1 HAVING count(*) = ${tokens.length}` },
+        { label: "contém as palavras", sql: allWords(false) },
+        { label: "aproximado", sql: allWords(true) },
+      ];
+      for (const tier of tiers) {
+        const [r] = await q(`SELECT count(*) AS n, list(logradouro ORDER BY logradouro)[1:5] AS ex FROM (${tier.sql})`);
+        if (r.n > 0) {
+          const ex = [...r.ex].join(" · ");
+          const more = r.n > 5 ? ` · +${fmt(r.n - 5)}` : "";
+          return {
+            sql: `logradouro IN (${tier.sql})`,
+            hint: `Logradouro (${tier.label}, ${fmt(r.n)}): ${ex}${more}`,
+          };
+        }
+      }
+      return { sql: "false", hint: "Nenhum logradouro encontrado." };
     }
 
     function esc(s) {
       return String(s).replace(/'/g, "''");
     }
 
-    function whereClause() {
+    function whereClause(ruaSql) {
       const parts = ["1=1"];
       const anos = [...$("#f-ano").selectedOptions].map(o => o.value).filter(Boolean);
       if (anos.length) parts.push(`ano_pag IN (${anos.join(",")})`);
@@ -522,8 +612,7 @@
         parts.push(`cep LIKE '${esc(cepRaw)}%'`);
       }
 
-      const rua = $("#f-rua").value.trim().toUpperCase();
-      if (rua) parts.push(`upper(coalesce(logradouro, '')) LIKE '%${esc(rua)}%'`);
+      if (ruaSql) parts.push(ruaSql);
 
       const num = $("#f-num").value.replace(/\D/g, "");
       if (num) parts.push(`numero = ${+num}`);
@@ -591,9 +680,11 @@
     }
 
     async function refresh() {
-      const w = whereClause();
       $("#status").textContent = "consultando…";
       $("#status").className = "status loading";
+      const rua = await resolveRua();
+      $("#rua-hint").textContent = rua.hint;
+      const w = whereClause(rua.sql);
 
       // KPIs
       const k = (await q(`

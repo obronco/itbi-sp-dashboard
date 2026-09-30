@@ -4,6 +4,8 @@ on:
   schedule:
     # 5th of each month at 12:00 UTC ≈ 09:00 BRT
     - cron: "0 12 5 * *"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -42,20 +44,42 @@ jobs:
       # built this month instead of re-downloading ~175MB of Excel files.
       # Bust it early by editing the scripts (hashFiles changes the key) or
       # by deleting the cache entry from Settings → Actions → Caches.
-      - name: Cache built parquet
+      - name: Restore cached parquet
         id: cache-parquet
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: itbi_sp_5y.parquet
           key: itbi-parquet-${{ steps.datekey.outputs.ym }}-${{ hashFiles('scripts/download_itbi.py', 'scripts/preprocess_itbi.py') }}
 
+      # The Prefeitura's server intermittently blocks GitHub-hosted runners.
+      # Don't let that block deploying site changes: fall back to the parquet
+      # currently live on Pages (below) instead of failing the whole run.
       - name: Download ITBI Excel files (last 5 years)
+        id: download
         if: steps.cache-parquet.outputs.cache-hit != 'true'
+        continue-on-error: true
         run: python scripts/download_itbi.py
 
       - name: Preprocess → parquet
-        if: steps.cache-parquet.outputs.cache-hit != 'true'
+        id: preprocess
+        if: steps.download.outcome == 'success'
         run: python scripts/preprocess_itbi.py
+
+      # Saved only when freshly built, so a fallback copy never occupies this
+      # month's cache key and the next run retries the download.
+      - name: Save parquet to cache
+        if: steps.preprocess.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: itbi_sp_5y.parquet
+          key: ${{ steps.cache-parquet.outputs.cache-primary-key }}
+
+      - name: Fall back to currently deployed parquet
+        if: steps.download.outcome == 'failure'
+        run: |
+          echo "::warning::ITBI download failed — redeploying the parquet currently live on Pages"
+          curl -fsSL --retry 3 -o itbi_sp_5y.parquet \
+            "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/itbi_sp_5y.parquet"
 
       - name: Prepare site artifact
         run: |
