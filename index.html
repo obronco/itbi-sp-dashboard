@@ -30,7 +30,22 @@
       background: var(--bg);
       color: var(--text);
       line-height: 1.45;
-      min-height: 100vh;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Sidebar + main each scroll on their own below the header */
+    .layout {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+    }
+
+    .main-scroll {
+      flex: 1;
+      min-width: 0;
+      overflow-y: auto;
     }
 
     header {
@@ -41,9 +56,6 @@
       flex-wrap: wrap;
       align-items: center;
       gap: 1rem;
-      position: sticky;
-      top: 0;
-      z-index: 50;
     }
 
     header h1 {
@@ -81,20 +93,49 @@
     }
 
     .filters {
+      width: 280px;
+      flex-shrink: 0;
+      overflow-y: auto;
       display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-      padding: 1rem 1.5rem;
+      flex-direction: column;
+      gap: 0.85rem;
+      padding: 1rem 1.1rem 1.5rem;
       background: var(--card);
-      border-bottom: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+    }
+
+    .filters .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.6rem;
+    }
+
+    .filters .row.addr {
+      grid-template-columns: 1fr 72px;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        height: auto;
+        display: block;
+      }
+
+      .layout {
+        display: block;
+      }
+
+      .filters {
+        width: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
     }
 
     .rua-hint {
-      padding: 0.4rem 1.5rem;
-      font-size: 0.8rem;
+      margin-top: -0.45rem;
+      font-size: 0.75rem;
       color: var(--muted);
-      background: var(--card);
-      border-bottom: 1px solid var(--border);
+      line-height: 1.4;
     }
 
     .rua-hint:empty {
@@ -119,11 +160,11 @@
       padding: 0.45rem 0.6rem;
       border-radius: 6px;
       font-size: 0.9rem;
-      min-width: 120px;
+      width: 100%;
+      min-width: 0;
     }
 
     .filters button {
-      align-self: flex-end;
       background: var(--accent);
       color: white;
       border: none;
@@ -151,9 +192,21 @@
 
     .kpis {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      grid-template-columns: repeat(3, 1fr);
       gap: 0.85rem;
       margin-bottom: 1.25rem;
+    }
+
+    @media (min-width: 1700px) {
+      .kpis {
+        grid-template-columns: repeat(6, 1fr);
+      }
+    }
+
+    @media (max-width: 600px) {
+      .kpis {
+        grid-template-columns: repeat(2, 1fr);
+      }
     }
 
     .kpi {
@@ -305,73 +358,80 @@
     <div id="status" class="status loading">inicializando</div>
   </header>
 
-  <div class="filters">
-    <label>CEP
-      <input id="f-cep" type="text" inputmode="numeric" placeholder="01310 ou 01310100" style="min-width:130px" />
-    </label>
-    <label>Logradouro (rua)
-      <input id="f-rua" type="text" placeholder="ex: AV PAULISTA" style="min-width:160px" />
-    </label>
-    <label>Nº (opcional)
-      <input id="f-num" type="text" placeholder="1000" style="min-width:80px" />
-    </label>
-    <label>Bairro (contém)
-      <input id="f-bairro" type="text" placeholder="ex: PINHEIROS" />
-    </label>
-    <label>Segmento
-      <select id="f-segmento">
-        <option value="">Todos</option>
-        <option value="sala_condominio">Sala / escritório (condo)</option>
-        <option value="predio_escritorio">Prédio de escritório</option>
-        <option value="apt_condominio">Apartamento (condo)</option>
-        <option value="loja_condominio">Loja em condomínio</option>
-        <option value="loja">Loja</option>
-        <option value="residencia">Residência</option>
-        <option value="terreno">Terreno</option>
-        <option value="garagem_residencial">Garagem residencial</option>
-        <option value="garagem_escritorio">Garagem escritório</option>
-      </select>
-    </label>
-    <label>Ano pagamento
-      <select id="f-ano" multiple size="1" style="min-width:140px"></select>
-    </label>
-    <label>Mês
-      <select id="f-mes">
-        <option value="">Todos</option>
-        <option value="1">Jan</option>
-        <option value="2">Fev</option>
-        <option value="3">Mar</option>
-        <option value="4">Abr</option>
-        <option value="5">Mai</option>
-        <option value="6">Jun</option>
-        <option value="7">Jul</option>
-        <option value="8">Ago</option>
-        <option value="9">Set</option>
-        <option value="10">Out</option>
-        <option value="11">Nov</option>
-        <option value="12">Dez</option>
-      </select>
-    </label>
-    <label>Natureza
-      <select id="f-natureza">
-        <option value="">Todas</option>
-      </select>
-    </label>
-    <label>Valor mín (R$)
-      <input id="f-vmin" type="number" placeholder="0" />
-    </label>
-    <label>Valor máx (R$)
-      <input id="f-vmax" type="number" placeholder="" />
-    </label>
-    <label style="flex-direction:row;align-items:center;gap:0.4rem;margin-top:1.1rem">
-      <input id="f-mercado" type="checkbox" checked />
-      <span style="text-transform:none;letter-spacing:0;font-size:0.85rem;color:var(--text)">Só mercado_ok</span>
-    </label>
-    <button id="btn-apply">Aplicar</button>
-    <button id="btn-reset" class="secondary">Limpar</button>
-  </div>
-  <div id="rua-hint" class="rua-hint"></div>
+  <div class="layout">
+    <aside class="filters">
+      <label>CEP
+        <input id="f-cep" type="text" inputmode="numeric" placeholder="01310 ou 01310100" />
+      </label>
+      <div class="row addr">
+        <label>Logradouro
+          <input id="f-rua" type="text" placeholder="ex: AV PAULISTA" />
+        </label>
+        <label>Nº
+          <input id="f-num" type="text" inputmode="numeric" placeholder="1000" />
+        </label>
+      </div>
+      <div id="rua-hint" class="rua-hint"></div>
+      <label>Bairro (contém)
+        <input id="f-bairro" type="text" placeholder="ex: PINHEIROS" />
+      </label>
+      <label>Segmento
+        <select id="f-segmento">
+          <option value="">Todos</option>
+          <option value="sala_condominio">Sala / escritório (condo)</option>
+          <option value="predio_escritorio">Prédio de escritório</option>
+          <option value="apt_condominio">Apartamento (condo)</option>
+          <option value="loja_condominio">Loja em condomínio</option>
+          <option value="loja">Loja</option>
+          <option value="residencia">Residência</option>
+          <option value="terreno">Terreno</option>
+          <option value="garagem_residencial">Garagem residencial</option>
+          <option value="garagem_escritorio">Garagem escritório</option>
+        </select>
+      </label>
+      <label>Natureza
+        <select id="f-natureza">
+          <option value="">Todas</option>
+        </select>
+      </label>
+      <div class="row">
+        <label>Ano pagamento
+          <select id="f-ano" multiple size="5"></select>
+        </label>
+        <label>Mês
+          <select id="f-mes">
+            <option value="">Todos</option>
+            <option value="1">Jan</option>
+            <option value="2">Fev</option>
+            <option value="3">Mar</option>
+            <option value="4">Abr</option>
+            <option value="5">Mai</option>
+            <option value="6">Jun</option>
+            <option value="7">Jul</option>
+            <option value="8">Ago</option>
+            <option value="9">Set</option>
+            <option value="10">Out</option>
+            <option value="11">Nov</option>
+            <option value="12">Dez</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Valor mín (R$)
+          <input id="f-vmin" type="number" placeholder="0" />
+        </label>
+        <label>Valor máx (R$)
+          <input id="f-vmax" type="number" placeholder="" />
+        </label>
+      </div>
+      <label style="flex-direction:row;align-items:center;gap:0.4rem">
+        <input id="f-mercado" type="checkbox" checked style="width:auto" />
+        <span style="text-transform:none;letter-spacing:0;font-size:0.85rem;color:var(--text)">Só mercado_ok</span>
+      </label>
+      <button id="btn-reset" class="secondary">Limpar filtros</button>
+    </aside>
 
+    <div class="main-scroll">
   <main>
     <div class="kpis" id="kpis"></div>
 
@@ -443,6 +503,8 @@
       Dados processados localmente via DuckDB-WASM — nenhum dado sai do seu navegador.
     </p>
   </main>
+    </div>
+  </div>
 
   <script type="module">
     const PARQUET_URL = "./itbi_sp_5y.parquet";
@@ -679,7 +741,33 @@
       charts = {};
     }
 
+    // Re-run on every filter change. Only one refresh runs at a time; changes
+    // made while one is in flight collapse into a single follow-up run.
+    let refreshing = false, refreshPending = false, debounceTimer = null;
+    async function scheduleRefresh() {
+      clearTimeout(debounceTimer);
+      if (refreshing) { refreshPending = true; return; }
+      refreshing = true;
+      try {
+        do {
+          refreshPending = false;
+          await refresh();
+        } while (refreshPending);
+      } catch (e) {
+        console.error(e);
+        $("#status").textContent = "erro: " + e.message;
+        $("#status").className = "status err";
+      } finally {
+        refreshing = false;
+      }
+    }
+    function debouncedRefresh() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(scheduleRefresh, 250);
+    }
+
     async function refresh() {
+      const t0 = performance.now();
       $("#status").textContent = "consultando…";
       $("#status").className = "status loading";
       const rua = await resolveRua();
@@ -891,7 +979,7 @@
     </tr>`;
       }).join("") || `<tr><td colspan="9" style="color:var(--muted)">Nenhuma transação com os filtros atuais.</td></tr>`;
 
-      $("#status").textContent = `${fmt(k.n)} transações filtradas`;
+      $("#status").textContent = `${fmt(k.n)} transações filtradas · ${fmt(performance.now() - t0)} ms`;
       $("#status").className = "status ok";
     }
 
@@ -902,7 +990,7 @@
         $("#loading-overlay").classList.add("hidden");
         $("#status").textContent = "pronto";
         $("#status").className = "status ok";
-        await refresh();
+        await scheduleRefresh();
       } catch (e) {
         console.error(e);
         $("#load-msg").textContent = "Erro: " + e.message;
@@ -911,7 +999,6 @@
       }
     }
 
-    $("#btn-apply").addEventListener("click", () => refresh());
     $("#btn-reset").addEventListener("click", () => {
       [...$("#f-ano").options].forEach(o => o.selected = true);
       $("#f-mes").value = "";
@@ -924,12 +1011,19 @@
       $("#f-vmin").value = "";
       $("#f-vmax").value = "";
       $("#f-mercado").checked = true;
-      refresh();
+      scheduleRefresh();
     });
 
-    // Enter key applies filters
-    document.querySelector(".filters").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); refresh(); }
+    // Text boxes refresh after a short typing pause; selects/checkbox right away
+    const filtersEl = document.querySelector(".filters");
+    filtersEl.addEventListener("input", (e) => {
+      if (e.target.matches("input[type=text], input[type=number]")) debouncedRefresh();
+    });
+    filtersEl.addEventListener("change", (e) => {
+      if (e.target.matches("select, input[type=checkbox]")) scheduleRefresh();
+    });
+    filtersEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); scheduleRefresh(); }
     });
 
     main();
