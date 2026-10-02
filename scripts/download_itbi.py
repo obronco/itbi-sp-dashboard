@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Download the last 5 years of ITBI Excel files from Prefeitura de São Paulo.
+Download ITBI Excel files from Prefeitura de São Paulo: by default the last
+5 years; `--years 2006-2021` fetches a range (the history, built separately).
 
 The links are read from the official page on every run:
 https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31501
@@ -12,6 +13,7 @@ the data. YEAR_URLS below is only a fallback for years the page parse misses.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 import time
@@ -99,19 +101,38 @@ def discover_urls() -> dict[int, str]:
     return found
 
 
+def select_years(spec: str, available: list[int]) -> list[int]:
+    """'recent' → the N_YEARS most recent; 'A-B' (or 'A') → that range."""
+    available = sorted(available)
+    if spec == "recent":
+        return available[-N_YEARS:]
+    lo, _, hi = spec.partition("-")
+    return [y for y in available if int(lo) <= y <= int(hi or lo)]
+
+
 def main() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Downloading into {DATA_DIR}")
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--years", default="recent", help="'recent' (default, last 5) or a range like 2006-2021")
+    ap.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    args = ap.parse_args()
+
+    data_dir = args.data_dir
+    data_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading into {data_dir}")
 
     found = discover_urls()
     print(f"  page lists {len(found)} years" + (f" ({min(found)}–{max(found)})" if found else ""))
-    years = sorted(set(found) | set(YEAR_URLS))[-N_YEARS:]
+    years = select_years(args.years, list(set(found) | set(YEAR_URLS)))
+    if not years:
+        raise SystemExit(f"No years match {args.years!r}")
 
     for year in years:
-        url = found.get(year) or YEAR_URLS[year]
+        url = found.get(year) or YEAR_URLS.get(year)
+        if url is None:
+            raise SystemExit(f"{year}: not on the page and no fallback URL")
         if year not in found:
             print(f"  {year}: not found on the page — fallback URL")
-        dest = DATA_DIR / f"itbi_{year}.xlsx"
+        dest = data_dir / f"itbi_{year}.xlsx"
         # The source URL is kept next to the file: a new link (the monthly
         # update of the current year) means a new file, even if one is present.
         src = dest.with_suffix(".url")

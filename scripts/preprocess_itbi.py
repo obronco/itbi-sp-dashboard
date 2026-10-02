@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import urllib.request
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -366,6 +367,17 @@ def process_sheet(df: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
+    # Same 28 columns in every year, but headers occasionally carry a typo
+    # (2020 labels "Descrição do padrão (IPTU)" as a second "ACC (IPTU)",
+    # which pandas reads as "ACC (IPTU).1"). Trust the position when only a
+    # couple of names are off.
+    expected = list(RENAME.keys())
+    if len(df.columns) == len(expected):
+        off = [i for i, (a, b) in enumerate(zip(df.columns, expected)) if a != b]
+        if 0 < len(off) <= 2:
+            print(f"(header fix: {[df.columns[i] for i in off]} → {[expected[i] for i in off]}) ", end="")
+            df.columns = expected
+
     df = df.rename(columns={k: v for k, v in RENAME.items() if k in df.columns})
 
     keep = [c for c in CANONICAL if c in df.columns]
@@ -460,37 +472,71 @@ def write_parquet(df: pd.DataFrame, path: Path) -> None:
     con.close()
 
 
-def write_partitions(full: pd.DataFrame, out_dir: Path) -> dict:
-    """
-    One sorted parquet per payment year (ano_pag) plus manifest.json listing
-    them, newest first, with the latest transaction / payment month so the
-    page can show "dados até …" before every year has loaded.
-    """
+def write_partitions(full: pd.DataFrame, out_dir: Path) -> None:
+    """One sorted parquet per payment year (ano_pag) in out_dir."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    years = sorted(full["ano_pag"].unique(), reverse=True)
+    for y in sorted(full["ano_pag"].unique(), reverse=True):
+        write_parquet(full.loc[full["ano_pag"] == y], out_dir / f"itbi_{int(y)}.parquet")
+
+
+IPCA_URL = "https://apisidra.ibge.gov.br/values/t/1737/n1/all/v/2266/p/all?formato=json"
+
+
+def fetch_ipca_factors() -> dict | None:
+    """
+    IPCA number index (IBGE SIDRA table 1737, var 2266; Dec/1993 = 100) →
+    per-month factor that brings a value from that month to the latest
+    month's prices. Months from the Real onwards (1994-07); None on failure.
+    """
+    try:
+        with urllib.request.urlopen(IPCA_URL, timeout=60) as r:
+            rows = json.load(r)[1:]  # first row is the header
+        index = {f"{r['D3C'][:4]}-{r['D3C'][4:]}": float(r["V"]) for r in rows if r["V"] not in ("...", "-", "")}
+    except Exception as e:
+        print(f"WARNING: IPCA unavailable ({e}) — dashboard will offer nominal values only")
+        return None
+    base = max(index)
+    return {
+        "base": base,
+        "source": "IBGE — IPCA, número-índice (SIDRA tabela 1737)",
+        "factors": {m: round(index[base] / v, 6) for m, v in sorted(index.items()) if m >= "1994-07"},
+    }
+
+
+def build_manifest(out_dir: Path) -> dict:
+    """
+    manifest.json for every itbi_YYYY.parquet in out_dir, newest first; the
+    N_YEARS most recent are the dashboard's default (the rest load on
+    demand). Also writes ipca.json for the inflation-adjusted view.
+    """
+    files = sorted(out_dir.glob("itbi_*.parquet"), reverse=True)
+    if not files:
+        raise SystemExit(f"No itbi_*.parquet in {out_dir}")
+    con = duckdb.connect()
     entries = []
-    for y in years:
-        name = f"itbi_{int(y)}.parquet"
-        part = full.loc[full["ano_pag"] == y]
-        write_parquet(part, out_dir / name)
-        entries.append({"year": int(y), "file": name, "rows": int(len(part)),
-                        "bytes": (out_dir / name).stat().st_size})
-    keep = {e["file"] for e in entries}
-    for stale in out_dir.glob("itbi_*.parquet"):
-        if stale.name not in keep:
-            stale.unlink()
+    for i, f in enumerate(files):
+        rows, dmax, ymax = con.sql(
+            f"SELECT count(*), strftime(max(data_transacao), '%Y-%m-%d'), max(ano_mes_pag) FROM read_parquet('{f}')"
+        ).fetchone()
+        entries.append({"year": int(f.stem.split("_")[1]), "file": f.name, "rows": rows,
+                        "bytes": f.stat().st_size, "default": i < N_YEARS, "_dmax": dmax, "_ymax": ymax})
     manifest = {
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "max_data_transacao": pd.to_datetime(full["data_transacao"]).max().strftime("%Y-%m-%d"),
-        "max_ano_mes_pag": str(full["ano_mes_pag"].max()),
+        "max_data_transacao": max(e.pop("_dmax") for e in entries),
+        "max_ano_mes_pag": max(e.pop("_ymax") for e in entries),
         "years": entries,
+        "ipca": None,
     }
+    ipca = fetch_ipca_factors()
+    if ipca:
+        (out_dir / "ipca.json").write_text(json.dumps(ipca))
+        manifest["ipca"] = {"file": "ipca.json", "base": ipca["base"]}
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest
 
 
-def process_year(year: int) -> pd.DataFrame:
-    path = DATA_DIR / f"itbi_{year}.xlsx"
+def process_year(year: int, data_dir: Path = DATA_DIR) -> pd.DataFrame:
+    path = data_dir / f"itbi_{year}.xlsx"
     print(f"Processing {path.name} ...")
     xl = pd.ExcelFile(path, engine="openpyxl")
     frames = []
@@ -531,23 +577,38 @@ def process_year(year: int) -> pd.DataFrame:
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--years", default="recent",
+                    help="'recent' (default: the 5 most recent downloaded years) or a range like 2006-2021")
+    ap.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    ap.add_argument("--out-dir", type=Path, default=OUT_DIR)
+    ap.add_argument("--manifest", type=Path, metavar="DIR",
+                    help="only (re)write manifest.json + ipca.json for the per-year files in DIR")
     ap.add_argument("--repartition", type=Path, metavar="PARQUET",
                     help="skip the Excel files: split an existing single parquet into per-year files")
     args = ap.parse_args()
+
+    if args.manifest:
+        m = build_manifest(args.manifest)
+        print(f"{args.manifest}/manifest.json: {len(m['years'])} years, default "
+              f"{[e['year'] for e in m['years'] if e['default']]}, IPCA base {m['ipca'] and m['ipca']['base']}")
+        return
     if args.repartition:
-        manifest = write_partitions(pd.read_parquet(args.repartition), OUT_DIR)
-        print(f"{OUT_DIR}: " + ", ".join(f"{e['year']} ({e['bytes'] / 1e6:.1f} MB)" for e in manifest["years"]))
+        write_partitions(pd.read_parquet(args.repartition), args.out_dir)
+        build_manifest(args.out_dir)
         return
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    found = sorted(int(m.group(1)) for p in DATA_DIR.glob("itbi_*.xlsx")
+    found = sorted(int(m.group(1)) for p in args.data_dir.glob("itbi_*.xlsx")
                    if (m := re.fullmatch(r"itbi_(\d{4})", p.stem)))
-    years = found[-N_YEARS:]
+    if args.years == "recent":
+        years = found[-N_YEARS:]
+    else:
+        lo, _, hi = args.years.partition("-")
+        years = [y for y in found if int(lo) <= y <= int(hi or lo)]
     print(f"Years: {years}")
     all_frames = []
     for y in years:
-        df = process_year(y)
+        df = process_year(y, args.data_dir)
         if not df.empty:
             all_frames.append(df)
             print(f"  year {y}: {len(df):,} clean rows")
@@ -589,12 +650,11 @@ def main():
         if c in full.columns:
             full[c] = full[c].astype("boolean")
 
-    manifest = write_partitions(full, OUT_DIR)
-    total = sum(e["bytes"] for e in manifest["years"])
-    print(f"\nFinal: {OUT_DIR}/  rows={len(full):,}  size={total / 1e6:.1f} MB  "
-          f"(data até {manifest['max_data_transacao']})")
+    write_partitions(full, args.out_dir)
+    manifest = build_manifest(args.out_dir)
+    print(f"\nFinal: {args.out_dir}/  rows={len(full):,}  (data até {manifest['max_data_transacao']})")
     for e in manifest["years"]:
-        print(f"  {e['year']}: {e['rows']:>8,} rows  {e['bytes'] / 1e6:5.1f} MB")
+        print(f"  {e['year']}: {e['rows']:>8,} rows  {e['bytes'] / 1e6:5.1f} MB{'  (default)' if e['default'] else ''}")
     print("\nsegmento counts:")
     print(full["segmento"].value_counts().head(15).to_string())
     print(

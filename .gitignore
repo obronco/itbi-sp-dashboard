@@ -3,6 +3,7 @@ data/
 *.xlsx
 itbi_sp_5y.parquet
 parquet/
+history/
 legacy.parquet
 itbi_*_clean.parquet
 site/
@@ -11,3 +12,4 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+live_manifest.json

@@ -34,9 +34,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Compute cache key (data changes ~monthly)
+      - name: Compute cache keys (recent data changes ~monthly)
         id: datekey
-        run: echo "ym=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "ym=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+          # History = 2006 … (this year − 5). Never misses a year: the recent
+          # window is the 5 newest years the Prefeitura lists, which can lag
+          # into January (then a year sits in both — same file, harmless).
+          echo "hist_until=$(( $(date -u +%Y) - 5 ))" >> "$GITHUB_OUTPUT"
 
       # Data only changes when Prefeitura publishes a new monthly sheet, so a
       # run triggered just to redeploy index.html (or any run within the same
@@ -74,28 +79,61 @@ jobs:
           path: parquet
           key: ${{ steps.cache-parquet.outputs.cache-primary-key }}
 
-      # Live site has per-year files + manifest; before the switch to that layout
-      # it had a single itbi_sp_5y.parquet, which is split into years here.
-      - name: Fall back to currently deployed data
-        if: steps.download.outcome == 'failure'
+      # History (2006 … this year − 5) barely changes: built once per range and
+      # pipeline version, cached without the month, and loaded on demand by
+      # the page. A failed download here doesn't block the deploy either.
+      - name: Restore cached history
+        id: cache-history
+        uses: actions/cache/restore@v4
+        with:
+          path: history
+          key: itbi-history-2006-${{ steps.datekey.outputs.hist_until }}-${{ hashFiles('scripts/download_itbi.py', 'scripts/preprocess_itbi.py') }}
+
+      - name: Download history Excel files
+        id: download-history
+        if: steps.cache-history.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: python scripts/download_itbi.py --years 2006-${{ steps.datekey.outputs.hist_until }}
+
+      - name: Preprocess history → parquet
+        id: preprocess-history
+        if: steps.download-history.outcome == 'success'
+        run: python scripts/preprocess_itbi.py --years 2006-${{ steps.datekey.outputs.hist_until }} --out-dir history
+
+      - name: Save history to cache
+        if: steps.preprocess-history.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: history
+          key: ${{ steps.cache-history.outputs.cache-primary-key }}
+
+      # Site data = history + recent years; any year still missing (a failed
+      # download) comes from the live site. The live site before per-year
+      # files had a single itbi_sp_5y.parquet, which is split into years.
+      - name: Assemble data (+ fallback to the live site)
         run: |
-          echo "::warning::ITBI download failed — redeploying the data currently live on Pages"
           BASE="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
-          mkdir -p parquet
-          if curl -fsSL --retry 3 -o parquet/manifest.json "$BASE/parquet/manifest.json"; then
-            for f in $(python -c "import json; print(' '.join(e['file'] for e in json.load(open('parquet/manifest.json'))['years']))"); do
-              curl -fsSL --retry 3 -o "parquet/$f" "$BASE/parquet/$f"
+          mkdir -p site/parquet
+          cp history/itbi_*.parquet site/parquet/ 2>/dev/null || true
+          cp parquet/itbi_*.parquet site/parquet/ 2>/dev/null || true
+          if curl -fsSL --retry 3 -o live_manifest.json "$BASE/parquet/manifest.json"; then
+            for f in $(python -c "import json; print(' '.join(e['file'] for e in json.load(open('live_manifest.json'))['years']))"); do
+              if [ ! -f "site/parquet/$f" ]; then
+                echo "::warning::$f not built in this run — taking the live copy"
+                curl -fsSL --retry 3 -o "site/parquet/$f" "$BASE/parquet/$f"
+              fi
             done
-          else
+          elif ! ls site/parquet/itbi_*.parquet >/dev/null 2>&1; then
+            echo "::warning::no data built and no live manifest — splitting the live single-file parquet"
             curl -fsSL --retry 3 -o legacy.parquet "$BASE/itbi_sp_5y.parquet"
-            python scripts/preprocess_itbi.py --repartition legacy.parquet
+            python scripts/preprocess_itbi.py --repartition legacy.parquet --out-dir site/parquet
           fi
+          python scripts/preprocess_itbi.py --manifest site/parquet
 
       - name: Prepare site artifact
         run: |
           mkdir -p site
           cp index.html site/
-          cp -r parquet site/
           mkdir -p site/geo
           cp geo/quadras_geo.parquet site/geo/
           ls -lh site/

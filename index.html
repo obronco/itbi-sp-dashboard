@@ -665,7 +665,7 @@
       </label>
       <div class="row">
         <label>Ano pagamento
-          <select id="f-ano" multiple size="5"></select>
+          <select id="f-ano" multiple size="6"></select>
         </label>
         <label>Mês
           <select id="f-mes">
@@ -685,6 +685,7 @@
           </select>
         </label>
       </div>
+      <button id="btn-history" class="secondary" hidden></button>
       <div class="row">
         <label>Valor mín (R$)
           <input id="f-vmin" type="number" placeholder="0" />
@@ -702,6 +703,10 @@
         </label>
       </div>
       <div class="rua-hint">Área construída do IPTU, ou privativa quando o fator acima está preenchido.</div>
+      <label style="flex-direction:row;align-items:center;gap:0.4rem">
+        <input id="f-ipca" type="checkbox" style="width:auto" />
+        <span id="ipca-label" style="text-transform:none;letter-spacing:0;font-size:0.85rem;color:var(--text)">Valores corrigidos pelo IPCA</span>
+      </label>
       <label style="flex-direction:row;align-items:center;gap:0.4rem">
         <input id="f-mercado" type="checkbox" checked style="width:auto" />
         <span style="text-transform:none;letter-spacing:0;font-size:0.85rem;color:var(--text)">Só mercado_ok</span>
@@ -1134,6 +1139,8 @@
         : `<span>Nenhuma transação com localização para os filtros atuais.</span>`;
     }
 
+    const MESES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+    let ipcaBase = null;              // 'YYYY-MM' the IPCA-adjusted values are expressed in
     let manifest = null;              // parquet/manifest.json, or null for the single-file layout
     const loadedYears = new Set();
     const fetchBuf = (url) => fetch(url).then(r => {
@@ -1142,16 +1149,21 @@
     });
     const manifestFetch = fetch(DATA_URL + "manifest.json").then(r => r.ok ? r.json() : null).catch(() => null);
     const geoFetch = fetch(GEO_URL).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
-    // newest year (or the years a shared link asks for) starts downloading
-    // alongside the DuckDB engine
+    const ipcaFetch = manifestFetch.then(m => m && m.ipca ? fetch(DATA_URL + m.ipca.file).then(r => r.ok ? r.json() : null) : null).catch(() => null);
+    // newest initial year starts downloading alongside the DuckDB engine
     let firstYearFetch = null;
-    manifestFetch.then(m => { if (m) firstYearFetch = fetchBuf(DATA_URL + loadOrder(m)[0].file); });
+    manifestFetch.then(m => { if (m) firstYearFetch = fetchBuf(DATA_URL + initialYears(m)[0].file); });
     const firstFetch = (entry) => entry ? (firstYearFetch || fetchBuf(DATA_URL + entry.file)) : fetchBuf(LEGACY_PARQUET_URL);
 
-    // Years to load, first to last: ones the URL filters on (?ano=), then newest first
-    function loadOrder(m) {
+    // Manifests before the history existed have no "default": every year is one
+    const isDefaultYear = (e) => e.default ?? true;
+
+    // Years to load up front, newest first: the ones a shared link filters on
+    // (?ano=), else the default (recent) years. Older years load on demand.
+    function initialYears(m) {
       const want = new Set((new URLSearchParams(location.search).get("ano") || "").split("|").filter(Boolean).map(Number));
-      return [...m.years].sort((a, b) => (want.has(b.year) - want.has(a.year)) || (b.year - a.year));
+      const pick = want.size ? m.years.filter(e => want.has(e.year)) : m.years.filter(isDefaultYear);
+      return (pick.length ? pick : m.years.filter(isDefaultYear)).sort((a, b) => b.year - a.year);
     }
 
     // Register a parquet buffer and create/append to the itbi table, joined to the region lookup
@@ -1164,22 +1176,30 @@
       await conn.query(create ? `CREATE TABLE itbi AS ${select}` : `INSERT INTO itbi BY NAME ${select}`);
     }
 
-    // Remaining years, one at a time, refreshing the page after each
-    async function loadRemainingYears() {
-      if (!manifest) return;
-      const rest = loadOrder(manifest).filter(e => !loadedYears.has(e.year));
-      if (!rest.length) return;
+    // Load years into the table one batch at a time (batches queue up), with a
+    // progress banner, refreshing the page after each year
+    let loadQueue = Promise.resolve();
+    function loadYears(years) {
+      loadQueue = loadQueue.then(() => loadYearsNow(years)).catch(console.error);
+      return loadQueue;
+    }
+    async function loadYearsNow(years) {
+      const todo = manifest.years.filter(e => years.includes(e.year) && !loadedYears.has(e.year))
+        .sort((a, b) => b.year - a.year);
+      if (!todo.length) return;
       const banner = $("#load-banner");
+      banner.classList.remove("err");
       const failed = [];
       const show = (current) => {
-        const parts = loadOrder(manifest).map(e =>
+        const parts = todo.map(e =>
           loadedYears.has(e.year) ? `${e.year} ✓` : e.year === current ? `<b>${e.year}…</b>` : failed.includes(e.year) ? `${e.year} ✗` : `${e.year}`);
-        banner.innerHTML = `Carregando dados: ${parts.join(" · ")} — os números abaixo ainda não incluem todos os anos.`;
+        banner.innerHTML = `Carregando dados: ${parts.join(" · ")} — os números abaixo ainda não incluem todos os anos selecionados.`;
         banner.hidden = false;
       };
-      // fetch the rest in parallel, add them in order as they arrive
-      const bufs = rest.map(e => fetchBuf(DATA_URL + e.file));
-      for (const [i, e] of rest.entries()) {
+      // fetch the batch in parallel, add the years in order as they arrive
+      const bufs = todo.map(e => fetchBuf(DATA_URL + e.file));
+      bufs.forEach(pr => pr.catch(() => { })); // failures are reported below, in order
+      for (const [i, e] of todo.entries()) {
         show(e.year);
         try {
           await addParquet(await bufs[i], e.file, false);
@@ -1189,6 +1209,7 @@
           console.error(err);
           failed.push(e.year);
         }
+        markLoadedYears();
         scheduleRefresh();
       }
       await refreshOptionCounts();
@@ -1198,6 +1219,24 @@
         banner.classList.add("err");
       } else {
         banner.hidden = true;
+      }
+    }
+
+    // Year options show which years still need downloading; the history button
+    // disappears once everything is in
+    function markLoadedYears() {
+      if (!manifest) return;
+      for (const o of $("#f-ano").options) {
+        const e = manifest.years.find(x => x.year === +o.value);
+        o.textContent = loadedYears.has(+o.value) ? o.value : `${o.value} ↓ ${fmt(e.bytes / 1e6, 1)} MB`;
+      }
+      const pending = manifest.years.filter(e => !loadedYears.has(e.year));
+      const btn = $("#btn-history");
+      btn.hidden = !pending.some(e => !isDefaultYear(e));
+      const hist = manifest.years.filter(e => !isDefaultYear(e));
+      if (hist.length) {
+        const ys = hist.map(e => e.year);
+        btn.textContent = `Carregar histórico ${Math.min(...ys)}–${Math.max(...ys)} (${fmt(hist.reduce((t, e) => t + e.bytes, 0) / 1e6, 0)} MB)`;
       }
     }
 
@@ -1237,7 +1276,7 @@
       msg.textContent = "Baixando dados…";
       const geoRes = geoFetch;
       manifest = await manifestFetch;
-      const first = manifest ? loadOrder(manifest)[0] : null;
+      const first = manifest ? initialYears(manifest)[0] : null;
       const buf = await firstFetch(first);
 
       // Region lookup is optional: without it the dashboard still works, just
@@ -1263,6 +1302,27 @@
       CASE WHEN proporcao BETWEEN 0.01 AND 100.5 THEN proporcao ELSE NULL END AS proporcao_ok
     FROM itbi
     WHERE valor_transacao > 0;
+  `);
+
+      // Inflation-adjusted twin of v_base: values in R$ of the latest IPCA
+      // month, by the month of the deal (factor 1 when unknown)
+      const ipca = await ipcaFetch;
+      await conn.query(`CREATE TABLE ipca (ym VARCHAR, f DOUBLE)`);
+      if (ipca) {
+        const rows = Object.entries(ipca.factors).map(([m, f]) => `('${m}', ${f})`).join(",");
+        await conn.query(`INSERT INTO ipca VALUES ${rows}`);
+        ipcaBase = ipca.base;
+        const [y, m] = ipca.base.split("-");
+        $("#ipca-label").textContent = `Valores corrigidos pelo IPCA (R$ de ${MESES[+m - 1]}/${y})`;
+      } else {
+        $("#f-ipca").disabled = true;
+        $("#ipca-label").textContent = "Correção pelo IPCA indisponível";
+      }
+      await conn.query(`
+    CREATE VIEW v_real AS
+    SELECT v.* REPLACE (v.valor_transacao * coalesce(i.f, 1) AS valor_transacao,
+                        v.preco_m2 * coalesce(i.f, 1) AS preco_m2)
+    FROM v_base v LEFT JOIN ipca i ON i.ym = strftime(v.data_transacao, '%Y-%m')
   `);
 
       await buildRuaWords();
@@ -1455,23 +1515,23 @@
         : await q(`SELECT strftime(max(data_transacao), '%Y-%m-%d') AS dt, max(ano_mes_pag) AS ym FROM itbi`);
       maxDataTransacao = d.dt;
       const [y, m] = d.ym.split("-");
-      $("#data-ate").textContent = ` · dados até ${["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"][+m - 1]}/${y}`;
+      $("#data-ate").textContent = ` · dados até ${MESES[+m - 1]}/${y}`;
 
       const anos = manifest
         ? manifest.years.map(e => ({ ano_pag: e.year })).sort((a, b) => a.ano_pag - b.ano_pag)
         : await q("SELECT DISTINCT ano_pag FROM itbi ORDER BY 1");
       const sel = $("#f-ano");
       sel.innerHTML = "";
-      anos.forEach(r => {
+      const selectedAtStart = manifest ? new Set(initialYears(manifest).map(e => e.year)) : null;
+      anos.slice().reverse().forEach(r => {
         const o = document.createElement("option");
         o.value = r.ano_pag;
         o.textContent = r.ano_pag;
-        o.selected = true;
+        o.selected = !selectedAtStart || selectedAtStart.has(r.ano_pag);
         sel.appendChild(o);
       });
-      // multi-select UX: make it a normal multi
-      sel.size = Math.min(5, anos.length);
-      sel.multiple = true;
+      sel.size = Math.min(6, anos.length);
+      markLoadedYears();
 
       await refreshOptionCounts();
     }
@@ -1508,6 +1568,12 @@
     const URL_MULTI = [["sub", "f-subpref"], ["dist", "f-distrito"], ["ano", "f-ano"]];
     const URL_CHECK = [["mercado", "f-mercado"], ["atip", "f-atipicas"]]; // both default on
 
+    // Year options selected by default, in option order (newest first)
+    function defaultYears() {
+      const opts = [...$("#f-ano").options].map(o => o.value);
+      return manifest ? opts.filter(v => isDefaultYear(manifest.years.find(e => e.year === +v))) : opts;
+    }
+
     function writeUrlState() {
       const ps = new URLSearchParams();
       for (const [k, id] of URL_TEXT) {
@@ -1518,10 +1584,13 @@
       for (const [k, id] of URL_MULTI) {
         const el = document.getElementById(id);
         const sel = [...el.selectedOptions].map(o => o.value);
-        const isDefault = id === "f-ano" ? sel.length === el.options.length : sel.length === 0;
+        const isDefault = id === "f-ano"
+          ? sel.join("|") === defaultYears().join("|")
+          : sel.length === 0;
         if (!isDefault) ps.set(k, sel.join("|"));
       }
       for (const [k, id] of URL_CHECK) if (!document.getElementById(id).checked) ps.set(k, "0");
+      if ($("#f-ipca").checked) ps.set("ipca", "1");
       // the user's own position stays out of shareable links
       if (clickCenter && !clickCenter.fromGps && $("#f-raio").value) ps.set("centro", `${clickCenter.lat},${clickCenter.lon}`);
       const qs = ps.toString();
@@ -1538,6 +1607,7 @@
         if (id === "f-subpref") syncDistritoOptions();
       }
       for (const [k, id] of URL_CHECK) if (ps.get(k) === "0") document.getElementById(id).checked = false;
+      if (ps.get("ipca") === "1" && !$("#f-ipca").disabled) $("#f-ipca").checked = true;
       const [clat, clon] = (ps.get("centro") || "").split(",").map(Number);
       if (Number.isFinite(clat) && Number.isFinite(clon) && clat && clon) clickCenter = { lat: clat, lon: clon };
     }
@@ -1670,9 +1740,9 @@
         const rows = await q(`
     SELECT strftime(data_transacao, '%Y-%m-%d') AS data_transacao, ano_mes_pag AS mes_pagamento,
            logradouro, numero, complemento, bairro, distrito, subpref AS subprefeitura, cep, sql,
-           segmento, natureza, valor_transacao,
+           segmento, natureza, round(valor_transacao, 2) AS ${$("#f-ipca").checked ? `valor_ipca_${ipcaBase.replace("-", "_")}` : "valor_transacao"},
            round(${area}, 2) AS ${priv ? "area_privativa_m2" : "area_construida_m2"},
-           round(${m2}, 2) AS ${priv ? "preco_m2_privativo" : "preco_m2_construido"},
+           round(${m2}, 2) AS ${priv ? "preco_m2_privativo" : "preco_m2_construido"}${$("#f-ipca").checked ? "_ipca" : ""},
            proporcao_pct, tipo_financiamento, lat, lon
     FROM filt
     ORDER BY data_transacao DESC NULLS LAST`);
@@ -1783,7 +1853,17 @@
       // building it drops bulk sales booked on a single unit and symbolic values;
       // being per block, it never flags a whole expensive neighbourhood.
       // Every chart/table below reads the filtered rows from `filt`, built once here
-      await conn.query(`CREATE OR REPLACE TABLE filt AS SELECT * FROM v_base WHERE ${wBase}`);
+      // Nominal or IPCA-adjusted values for everything below (filters on value apply to the same)
+      const src = $("#f-ipca").checked ? "v_real" : "v_base";
+      // _adj brings a row's value to IPCA-adjusted terms (1 when already adjusted),
+      // so the atypical check compares like with like across years: in nominal
+      // terms a 2008 sale looks a third of a 2025 one in the same block
+      await conn.query(`
+    CREATE OR REPLACE TABLE filt AS
+    SELECT s.*, ${src === "v_real" ? "1.0" : "coalesce(i._f, 1)"} AS _adj
+    FROM ${src} s
+    LEFT JOIN (SELECT ym AS _ym, f AS _f FROM ipca) i ON i._ym = strftime(s.data_transacao, '%Y-%m')
+    WHERE ${wBase}`);
       const atipOn = $("#f-atipicas").checked;
       let nAtip = 0;
       if (atipOn) {
@@ -1791,16 +1871,16 @@
         await conn.query(`
     CREATE OR REPLACE TABLE ref_atip AS
     SELECT segmento, sq,
-           median(valor_transacao / area_m2) FILTER (WHERE area_m2 > 0) AS med_m2,
-           median(valor_transacao) AS med_v
+           median(valor_transacao * _adj / area_m2) FILTER (WHERE area_m2 > 0) AS med_m2,
+           median(valor_transacao * _adj) AS med_v
     FROM filt
     GROUP BY 1, 2
     HAVING count(*) >= ${ATIP_MIN_N}`);
         await conn.query(`
     DELETE FROM filt USING ref_atip r
     WHERE r.segmento IS NOT DISTINCT FROM filt.segmento AND r.sq = filt.sq
-      AND (CASE WHEN filt.area_m2 > 0 AND r.med_m2 > 0 THEN filt.valor_transacao / filt.area_m2 / r.med_m2
-                ELSE filt.valor_transacao / r.med_v END) NOT BETWEEN 1.0 / ${ATIP_K} AND ${ATIP_K}`);
+      AND (CASE WHEN filt.area_m2 > 0 AND r.med_m2 > 0 THEN filt.valor_transacao * filt._adj / filt.area_m2 / r.med_m2
+                ELSE filt.valor_transacao * filt._adj / r.med_v END) NOT BETWEEN 1.0 / ${ATIP_K} AND ${ATIP_K}`);
         const [after] = await q(`SELECT count(*) AS n FROM filt`);
         nAtip = before.n - after.n;
       }
@@ -1835,6 +1915,12 @@
     <div class="kpi"><div class="label">Mediana ${priv ? "R$/m² privativo" : "R$/m² construído"}</div><div class="value">${fmtMoney(k.med_m2)}</div><div class="hint">n=${fmt(k.n_m2)} (${fmt(100 * k.n_m2 / (k.n || 1), 0)}% com preço)</div></div>
     <div class="kpi"><div class="label">Com financiamento</div><div class="value">${fmt(100 * k.n_fin / (k.n || 1), 1)}%</div><div class="hint">${fmt(k.n_fin)} deals</div></div>
   `;
+      if (src === "v_real") {
+        const [y, m] = ipcaBase.split("-");
+        document.querySelectorAll("#kpis .label").forEach(l => {
+          if (/VGV|valor|R\$/i.test(l.textContent)) l.insertAdjacentHTML("beforeend", ` · R$ de ${MESES[+m - 1]}/${y}`);
+        });
+      }
 
       destroyCharts();
 
@@ -1878,13 +1964,16 @@
       const semExpr = `year(data_transacao) * 10 + CASE WHEN month(data_transacao) <= 6 THEN 1 ELSE 2 END`;
       const [maxY, maxM] = maxDataTransacao.split("-").map(Number);
       const curSem = maxY * 10 + (maxM <= 6 ? 1 : 2);
+      // from the first selected payment year (older deals paid later are left out)
+      const selYears = [...$("#f-ano").selectedOptions].map(o => +o.value);
+      const firstSem = (selYears.length ? Math.min(...selYears) : maxY - 4) * 10 + 1;
       const semQuery = (from, where) => q(`
     SELECT ${semExpr} AS sem, median(${m2}) AS med, count(${m2}) AS n
     FROM ${from}
-    WHERE ${where} AND preco_m2 IS NOT NULL AND ${semExpr} >= 20221 AND ${semExpr} < ${curSem}
+    WHERE ${where} AND preco_m2 IS NOT NULL AND ${semExpr} >= ${firstSem} AND ${semExpr} < ${curSem}
     GROUP BY 1 ORDER BY 1`);
       const selSem = await semQuery("filt", "true");
-      const citySem = hasLocation ? await semQuery("v_base", wCity) : selSem;
+      const citySem = hasLocation ? await semQuery(src, wCity) : selSem;
       const sems = [...new Set([...selSem, ...citySem].map(r => r.sem))].sort();
       const semLabel = s => `${s % 10}º sem ${Math.floor(s / 10)}`;
       const byS = (rows) => Object.fromEntries(rows.map(r => [r.sem, r]));
@@ -2120,7 +2209,7 @@
         $("#status").textContent = "pronto";
         $("#status").className = "status ok";
         await scheduleRefresh();
-        loadRemainingYears();
+        if (manifest) loadYears(initialYears(manifest).map(e => e.year));
       } catch (e) {
         console.error(e);
         $("#load-msg").textContent = "Erro: " + e.message;
@@ -2130,7 +2219,9 @@
     }
 
     $("#btn-reset").addEventListener("click", () => {
-      [...$("#f-ano").options].forEach(o => o.selected = true);
+      const defs = new Set(defaultYears());
+      [...$("#f-ano").options].forEach(o => o.selected = defs.has(o.value));
+      $("#f-ipca").checked = false;
       $("#f-mes").value = "";
       $("#f-cep").value = "";
       $("#f-rua").value = "";
@@ -2163,10 +2254,20 @@
     });
     filtersEl.addEventListener("change", (e) => {
       if (e.target.id === "f-subpref") syncDistritoOptions();
+      // picking a year that isn't downloaded yet loads it
+      if (e.target.id === "f-ano" && manifest) {
+        const want = [...e.target.selectedOptions].map(o => +o.value).filter(y => !loadedYears.has(y));
+        if (want.length) loadYears(want);
+      }
       if (e.target.id === "f-raio" && !e.target.value) clickCenter = null;
       if (e.target.matches("select, input[type=checkbox]")) scheduleRefresh();
     });
     $("#g-group").addEventListener("change", () => scheduleRefresh());
+    $("#btn-history").addEventListener("click", () => {
+      for (const o of $("#f-ano").options) o.selected = true;
+      loadYears(manifest.years.map(e => e.year));
+      scheduleRefresh();
+    });
     $("#btn-csv").addEventListener("click", () => exportCsv().catch(e => {
       console.error(e);
       alert("Falha ao exportar: " + e.message);
