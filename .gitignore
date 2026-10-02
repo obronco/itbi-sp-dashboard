@@ -2,6 +2,8 @@
 data/
 *.xlsx
 itbi_sp_5y.parquet
+parquet/
+legacy.parquet
 itbi_*_clean.parquet
 site/
 __pycache__/

@@ -9,8 +9,11 @@ slices (compra e venda, full transfer, unit-scale area) and treat offices
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -22,8 +25,10 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
-OUT_PARQUET = ROOT / "itbi_sp_5y.parquet"
-YEARS = [2022, 2023, 2024, 2025, 2026]
+# One parquet per payment year + manifest.json: the dashboard loads the most
+# recent year first and the rest in the background
+OUT_DIR = ROOT / "parquet"
+N_YEARS = 5  # the most recent downloaded years (see download_itbi.py)
 MONTH_MAP = {
     "JAN": 1,
     "FEV": 2,
@@ -455,6 +460,35 @@ def write_parquet(df: pd.DataFrame, path: Path) -> None:
     con.close()
 
 
+def write_partitions(full: pd.DataFrame, out_dir: Path) -> dict:
+    """
+    One sorted parquet per payment year (ano_pag) plus manifest.json listing
+    them, newest first, with the latest transaction / payment month so the
+    page can show "dados até …" before every year has loaded.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    years = sorted(full["ano_pag"].unique(), reverse=True)
+    entries = []
+    for y in years:
+        name = f"itbi_{int(y)}.parquet"
+        part = full.loc[full["ano_pag"] == y]
+        write_parquet(part, out_dir / name)
+        entries.append({"year": int(y), "file": name, "rows": int(len(part)),
+                        "bytes": (out_dir / name).stat().st_size})
+    keep = {e["file"] for e in entries}
+    for stale in out_dir.glob("itbi_*.parquet"):
+        if stale.name not in keep:
+            stale.unlink()
+    manifest = {
+        "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "max_data_transacao": pd.to_datetime(full["data_transacao"]).max().strftime("%Y-%m-%d"),
+        "max_ano_mes_pag": str(full["ano_mes_pag"].max()),
+        "years": entries,
+    }
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    return manifest
+
+
 def process_year(year: int) -> pd.DataFrame:
     path = DATA_DIR / f"itbi_{year}.xlsx"
     print(f"Processing {path.name} ...")
@@ -497,13 +531,22 @@ def process_year(year: int) -> pd.DataFrame:
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--repartition", type=Path, metavar="PARQUET",
+                    help="skip the Excel files: split an existing single parquet into per-year files")
+    args = ap.parse_args()
+    if args.repartition:
+        manifest = write_partitions(pd.read_parquet(args.repartition), OUT_DIR)
+        print(f"{OUT_DIR}: " + ", ".join(f"{e['year']} ({e['bytes'] / 1e6:.1f} MB)" for e in manifest["years"]))
+        return
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    found = sorted(int(m.group(1)) for p in DATA_DIR.glob("itbi_*.xlsx")
+                   if (m := re.fullmatch(r"itbi_(\d{4})", p.stem)))
+    years = found[-N_YEARS:]
+    print(f"Years: {years}")
     all_frames = []
-    for y in YEARS:
-        path = DATA_DIR / f"itbi_{y}.xlsx"
-        if not path.exists():
-            print(f"WARNING: missing {path} — skip year {y}")
-            continue
+    for y in years:
         df = process_year(y)
         if not df.empty:
             all_frames.append(df)
@@ -546,10 +589,12 @@ def main():
         if c in full.columns:
             full[c] = full[c].astype("boolean")
 
-    write_parquet(full, OUT_PARQUET)
-    size_mb = OUT_PARQUET.stat().st_size / (1024 * 1024)
-    print(f"\nFinal: {OUT_PARQUET}  rows={len(full):,}  size={size_mb:.1f} MB")
-    print(full.groupby("ano_pag").size().to_string())
+    manifest = write_partitions(full, OUT_DIR)
+    total = sum(e["bytes"] for e in manifest["years"])
+    print(f"\nFinal: {OUT_DIR}/  rows={len(full):,}  size={total / 1e6:.1f} MB  "
+          f"(data até {manifest['max_data_transacao']})")
+    for e in manifest["years"]:
+        print(f"  {e['year']}: {e['rows']:>8,} rows  {e['bytes'] / 1e6:5.1f} MB")
     print("\nsegmento counts:")
     print(full["segmento"].value_counts().head(15).to_string())
     print(

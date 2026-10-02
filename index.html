@@ -226,6 +226,19 @@
       border-color: var(--accent);
     }
 
+    .load-banner {
+      margin-bottom: 1rem;
+      padding: 0.55rem 0.9rem;
+      border: 1px solid var(--orange);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.85rem;
+    }
+
+    .load-banner.err {
+      border-color: var(--red);
+    }
+
     .inline-select {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -711,6 +724,7 @@
       <div id="print-filters"></div>
       <div class="meta" id="print-meta"></div>
     </div>
+    <div id="load-banner" class="load-banner" hidden></div>
     <div class="kpis" id="kpis"></div>
 
     <div class="grid">
@@ -849,7 +863,9 @@
   </div>
 
   <script type="module">
-    const PARQUET_URL = "./itbi_sp_5y.parquet";
+    // One parquet per payment year + manifest.json (see scripts/preprocess_itbi.py)
+    const DATA_URL = "./parquet/";
+    const LEGACY_PARQUET_URL = "./itbi_sp_5y.parquet"; // single-file layout, if there's no manifest
     // setor+quadra (first 6 SQL digits) → centroid, distrito, subprefeitura
     const GEO_URL = "./geo/quadras_geo.parquet";
 
@@ -1118,6 +1134,73 @@
         : `<span>Nenhuma transação com localização para os filtros atuais.</span>`;
     }
 
+    let manifest = null;              // parquet/manifest.json, or null for the single-file layout
+    const loadedYears = new Set();
+    const fetchBuf = (url) => fetch(url).then(r => {
+      if (!r.ok) throw new Error(`Falha ao baixar ${url} (${r.status})`);
+      return r.arrayBuffer();
+    });
+    const manifestFetch = fetch(DATA_URL + "manifest.json").then(r => r.ok ? r.json() : null).catch(() => null);
+    const geoFetch = fetch(GEO_URL).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+    // newest year (or the years a shared link asks for) starts downloading
+    // alongside the DuckDB engine
+    let firstYearFetch = null;
+    manifestFetch.then(m => { if (m) firstYearFetch = fetchBuf(DATA_URL + loadOrder(m)[0].file); });
+    const firstFetch = (entry) => entry ? (firstYearFetch || fetchBuf(DATA_URL + entry.file)) : fetchBuf(LEGACY_PARQUET_URL);
+
+    // Years to load, first to last: ones the URL filters on (?ano=), then newest first
+    function loadOrder(m) {
+      const want = new Set((new URLSearchParams(location.search).get("ano") || "").split("|").filter(Boolean).map(Number));
+      return [...m.years].sort((a, b) => (want.has(b.year) - want.has(a.year)) || (b.year - a.year));
+    }
+
+    // Register a parquet buffer and create/append to the itbi table, joined to the region lookup
+    async function addParquet(buf, name, create) {
+      await db.registerFileBuffer(name, new Uint8Array(buf));
+      const select = `
+    SELECT t.*, substr(lpad(t.sql, 11, '0'), 1, 6) AS sq, g.distrito, g.subpref, g.lat, g.lon
+    FROM read_parquet('${name}') t
+    LEFT JOIN geo g ON g.sq = substr(lpad(t.sql, 11, '0'), 1, 6)`;
+      await conn.query(create ? `CREATE TABLE itbi AS ${select}` : `INSERT INTO itbi BY NAME ${select}`);
+    }
+
+    // Remaining years, one at a time, refreshing the page after each
+    async function loadRemainingYears() {
+      if (!manifest) return;
+      const rest = loadOrder(manifest).filter(e => !loadedYears.has(e.year));
+      if (!rest.length) return;
+      const banner = $("#load-banner");
+      const failed = [];
+      const show = (current) => {
+        const parts = loadOrder(manifest).map(e =>
+          loadedYears.has(e.year) ? `${e.year} ✓` : e.year === current ? `<b>${e.year}…</b>` : failed.includes(e.year) ? `${e.year} ✗` : `${e.year}`);
+        banner.innerHTML = `Carregando dados: ${parts.join(" · ")} — os números abaixo ainda não incluem todos os anos.`;
+        banner.hidden = false;
+      };
+      // fetch the rest in parallel, add them in order as they arrive
+      const bufs = rest.map(e => fetchBuf(DATA_URL + e.file));
+      for (const [i, e] of rest.entries()) {
+        show(e.year);
+        try {
+          await addParquet(await bufs[i], e.file, false);
+          loadedYears.add(e.year);
+          await buildRuaWords();
+        } catch (err) {
+          console.error(err);
+          failed.push(e.year);
+        }
+        scheduleRefresh();
+      }
+      await refreshOptionCounts();
+      scheduleRefresh();
+      if (failed.length) {
+        banner.textContent = `Não foi possível carregar ${failed.join(", ")} — os números abaixo não incluem ${failed.length > 1 ? "esses anos" : "esse ano"}. Recarregue a página para tentar de novo.`;
+        banner.classList.add("err");
+      } else {
+        banner.hidden = true;
+      }
+    }
+
     async function initDuckDB() {
       const msg = $("#load-msg");
       msg.textContent = "Carregando DuckDB-WASM…";
@@ -1151,14 +1234,11 @@
       URL.revokeObjectURL(worker_url);
       conn = await db.connect();
 
-      msg.textContent = "Baixando parquet…";
-      const geoRes = fetch(GEO_URL).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
-      const res = await fetch(PARQUET_URL);
-      if (!res.ok) throw new Error("Falha ao baixar " + PARQUET_URL + " (" + res.status + ")");
-      const len = +res.headers.get("content-length");
-      if (len) msg.textContent = `Baixando parquet (≈${(len / 1e6).toFixed(0)} MB)…`;
-      const buf = await res.arrayBuffer();
-      await db.registerFileBuffer("itbi.parquet", new Uint8Array(buf));
+      msg.textContent = "Baixando dados…";
+      const geoRes = geoFetch;
+      manifest = await manifestFetch;
+      const first = manifest ? loadOrder(manifest)[0] : null;
+      const buf = await firstFetch(first);
 
       // Region lookup is optional: without it the dashboard still works, just
       // with empty distrito/subprefeitura
@@ -1172,12 +1252,8 @@
       }
 
       msg.textContent = "Registrando tabela…";
-      await conn.query(`
-    CREATE TABLE itbi AS
-    SELECT t.*, substr(lpad(t.sql, 11, '0'), 1, 6) AS sq, g.distrito, g.subpref, g.lat, g.lon
-    FROM read_parquet('itbi.parquet') t
-    LEFT JOIN geo g ON g.sq = substr(lpad(t.sql, 11, '0'), 1, 6);
-  `);
+      await addParquet(buf, first ? first.file : "itbi.parquet", true);
+      if (first) loadedYears.add(first.year);
 
       // useful indexes-ish via views
       await conn.query(`
@@ -1189,9 +1265,14 @@
     WHERE valor_transacao > 0;
   `);
 
-      // One row per (street, word) for fuzzy logradouro search; connectives dropped
+      await buildRuaWords();
+    }
+
+    // One row per (street, word) for fuzzy logradouro search; connectives dropped.
+    // Rebuilt as each year loads, so new streets become searchable.
+    async function buildRuaWords() {
       await conn.query(`
-    CREATE TABLE rua_words AS
+    CREATE OR REPLACE TABLE rua_words AS
     SELECT DISTINCT logradouro, w FROM (
       SELECT logradouro,
              unnest(string_split(trim(regexp_replace(upper(logradouro), '[^A-Z0-9]+', ' ', 'g')), ' ')) AS w
@@ -1368,12 +1449,17 @@
     }
 
     async function loadFilterOptions() {
-      const [d] = await q(`SELECT strftime(max(data_transacao), '%Y-%m-%d') AS dt, max(ano_mes_pag) AS ym FROM itbi`);
+      // From the manifest when there is one, so they're right before every year has loaded
+      const [d] = manifest
+        ? [{ dt: manifest.max_data_transacao, ym: manifest.max_ano_mes_pag }]
+        : await q(`SELECT strftime(max(data_transacao), '%Y-%m-%d') AS dt, max(ano_mes_pag) AS ym FROM itbi`);
       maxDataTransacao = d.dt;
       const [y, m] = d.ym.split("-");
       $("#data-ate").textContent = ` · dados até ${["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"][+m - 1]}/${y}`;
 
-      const anos = await q("SELECT DISTINCT ano_pag FROM itbi ORDER BY 1");
+      const anos = manifest
+        ? manifest.years.map(e => ({ ano_pag: e.year })).sort((a, b) => a.ano_pag - b.ano_pag)
+        : await q("SELECT DISTINCT ano_pag FROM itbi ORDER BY 1");
       const sel = $("#f-ano");
       sel.innerHTML = "";
       anos.forEach(r => {
@@ -1387,21 +1473,29 @@
       sel.size = Math.min(5, anos.length);
       sel.multiple = true;
 
+      await refreshOptionCounts();
+    }
+
+    // Natureza / subprefeitura / distrito options with counts from the loaded
+    // rows. Re-run once every year is in; keeps what's selected (and hidden).
+    async function refreshOptionCounts() {
+      const keep = (sel) => new Set([...$(sel).selectedOptions].map(o => o.value));
+      const natSel = $("#f-natureza").value;
+      const subSel = keep("#f-subpref"), distSel = keep("#f-distrito");
+      const escHtml = (t) => String(t).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
       const nats = await q("SELECT natureza, count(*) c FROM itbi GROUP BY 1 ORDER BY c DESC LIMIT 20");
-      const sn = $("#f-natureza");
-      nats.forEach(r => {
-        const o = document.createElement("option");
-        o.value = r.natureza;
-        o.textContent = `${r.natureza} (${fmt(r.c)})`;
-        sn.appendChild(o);
-      });
+      $("#f-natureza").innerHTML = `<option value="">Todas</option>` + nats.map(r =>
+        `<option value="${escHtml(r.natureza)}">${escHtml(r.natureza)} (${fmt(r.c)})</option>`).join("");
+      $("#f-natureza").value = natSel;
 
       const subs = await q(`SELECT subpref, count(*) c FROM itbi WHERE subpref IS NOT NULL GROUP BY 1 ORDER BY 1`);
       $("#f-subpref").innerHTML = subs.map(r =>
-        `<option value="${r.subpref}">${r.subpref} (${fmt(r.c)})</option>`).join("");
+        `<option value="${r.subpref}"${subSel.has(r.subpref) ? " selected" : ""}>${r.subpref} (${fmt(r.c)})</option>`).join("");
       const dists = await q(`SELECT distrito, any_value(subpref) sp, count(*) c FROM itbi WHERE distrito IS NOT NULL GROUP BY 1 ORDER BY 1`);
       $("#f-distrito").innerHTML = dists.map(r =>
-        `<option value="${r.distrito}" data-sub="${r.sp}">${r.distrito} (${fmt(r.c)})</option>`).join("");
+        `<option value="${r.distrito}" data-sub="${r.sp}"${distSel.has(r.distrito) ? " selected" : ""}>${r.distrito} (${fmt(r.c)})</option>`).join("");
+      syncDistritoOptions();
     }
 
     // ---------- Filters ↔ URL, so a filtered view can be shared as a link ----------
@@ -2026,6 +2120,7 @@
         $("#status").textContent = "pronto";
         $("#status").className = "status ok";
         await scheduleRefresh();
+        loadRemainingYears();
       } catch (e) {
         console.error(e);
         $("#load-msg").textContent = "Erro: " + e.message;

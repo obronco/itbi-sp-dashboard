@@ -40,15 +40,15 @@ jobs:
 
       # Data only changes when Prefeitura publishes a new monthly sheet, so a
       # run triggered just to redeploy index.html (or any run within the same
-      # month + unchanged pipeline scripts) can reuse the parquet already
-      # built this month instead of re-downloading ~175MB of Excel files.
+      # month + unchanged pipeline scripts) can reuse the per-year parquets
+      # already built this month instead of re-downloading ~175MB of Excel files.
       # Bust it early by editing the scripts (hashFiles changes the key) or
       # by deleting the cache entry from Settings → Actions → Caches.
       - name: Restore cached parquet
         id: cache-parquet
         uses: actions/cache/restore@v4
         with:
-          path: itbi_sp_5y.parquet
+          path: parquet
           key: itbi-parquet-${{ steps.datekey.outputs.ym }}-${{ hashFiles('scripts/download_itbi.py', 'scripts/preprocess_itbi.py') }}
 
       # The Prefeitura's server intermittently blocks GitHub-hosted runners.
@@ -71,21 +71,31 @@ jobs:
         if: steps.preprocess.outcome == 'success'
         uses: actions/cache/save@v4
         with:
-          path: itbi_sp_5y.parquet
+          path: parquet
           key: ${{ steps.cache-parquet.outputs.cache-primary-key }}
 
-      - name: Fall back to currently deployed parquet
+      # Live site has per-year files + manifest; before the switch to that layout
+      # it had a single itbi_sp_5y.parquet, which is split into years here.
+      - name: Fall back to currently deployed data
         if: steps.download.outcome == 'failure'
         run: |
-          echo "::warning::ITBI download failed — redeploying the parquet currently live on Pages"
-          curl -fsSL --retry 3 -o itbi_sp_5y.parquet \
-            "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/itbi_sp_5y.parquet"
+          echo "::warning::ITBI download failed — redeploying the data currently live on Pages"
+          BASE="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+          mkdir -p parquet
+          if curl -fsSL --retry 3 -o parquet/manifest.json "$BASE/parquet/manifest.json"; then
+            for f in $(python -c "import json; print(' '.join(e['file'] for e in json.load(open('parquet/manifest.json'))['years']))"); do
+              curl -fsSL --retry 3 -o "parquet/$f" "$BASE/parquet/$f"
+            done
+          else
+            curl -fsSL --retry 3 -o legacy.parquet "$BASE/itbi_sp_5y.parquet"
+            python scripts/preprocess_itbi.py --repartition legacy.parquet
+          fi
 
       - name: Prepare site artifact
         run: |
           mkdir -p site
           cp index.html site/
-          cp itbi_sp_5y.parquet site/
+          cp -r parquet site/
           mkdir -p site/geo
           cp geo/quadras_geo.parquet site/geo/
           ls -lh site/

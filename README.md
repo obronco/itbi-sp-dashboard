@@ -5,7 +5,7 @@ Single-page dashboard of real-estate transactions in São Paulo with ITBI paymen
 - **Source**: [Prefeitura de São Paulo — Dados das Transações Imobiliárias (ITBI)](https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31501)
 - **Lookback**: last 5 calendar years
 - **Stack**: static HTML + DuckDB-WASM + Chart.js + MapLibre GL (basemap tiles from [OpenFreeMap](https://openfreemap.org/), no API key)
-- **Pipeline**: GitHub Actions downloads the yearly Excels, cleans them into a compact Parquet, and deploys to GitHub Pages
+- **Pipeline**: GitHub Actions downloads the yearly Excels, cleans them into one compact Parquet per year (`parquet/itbi_YYYY.parquet` + `manifest.json`), and deploys to GitHub Pages. The page draws the most recent year first and loads the others in the background.
 
 ## Live site
 
@@ -22,7 +22,7 @@ pip install -r requirements.txt
 # Download official Excel files into data/
 python scripts/download_itbi.py
 
-# Clean + build itbi_sp_5y.parquet
+# Clean + build parquet/itbi_YYYY.parquet + parquet/manifest.json
 python scripts/preprocess_itbi.py
 
 # (Optional) Rebuild the block → distrito/subprefeitura lookup from GeoSampa.
@@ -43,11 +43,9 @@ python -m http.server 8080
 
 The workflow also runs automatically on the 5th of every month (shortly after the municipal monthly release).
 
-## Updating download URLs
+## Download URLs
 
-The Prefeitura occasionally rotates the Excel links (especially for the current year).  
-Edit `YEAR_URLS` in `scripts/download_itbi.py` when a download starts failing.  
-Official page: https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31501
+The Prefeitura renames the current year's Excel every month, so `scripts/download_itbi.py` reads the links from the official page on every run (https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31501) and takes the 5 most recent years. `YEAR_URLS` in that script is only a fallback for a year the page parse misses. Each download's source link is saved next to it (`data/itbi_YYYY.url`); a changed link triggers a fresh download.
 
 ## Data notes
 
