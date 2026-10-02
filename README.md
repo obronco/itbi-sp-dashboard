@@ -62,6 +62,8 @@ Official page: https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31
 - **Raio** (300 m – 2 km) turns the address/CEP filter into a center and returns every deal around it, so other filters (segment, area, period) find comparables nearby; clicking the map picks the center instead. Distance is measured to fiscal-block centroids.
 - When the filter lands on a single address, a **building sheet** shows sales per year, unit types (grouped by IPTU area, which units of one type share) and the latest sales.
 - **Exportar CSV** downloads every filtered row (not just the 100 shown), formatted for Excel pt-BR (`;` separator, decimal comma, UTF-8 BOM).
+- **Seleção × cidade**: median R$/m² per semester (transaction date) of the selection vs the same filters city-wide without any location filter; semesters with < 5 priced deals are gaps and the current semester is left out (ITBI lag).
+- **Imprimir / salvar PDF**: print stylesheet (white, no sidebar) with a header listing the active filters, an optional name for who prepared it, the date and the link back to the same view; the map prints as a snapshot.
 - All filters are mirrored in the page URL, so a filtered view can be shared as a link.
 - Exact re-published DTI rows (same property, date, value and street) are deduplicated before the parquet is written.
 

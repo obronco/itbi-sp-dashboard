@@ -423,6 +423,114 @@
       line-height: 1.5;
     }
 
+    #print-header,
+    #map-print,
+    .print-only {
+      display: none;
+    }
+
+    @media print {
+      @page {
+        size: A4;
+        margin: 12mm;
+      }
+
+      :root {
+        --bg: #fff;
+        --card: #fff;
+        --border: #ccc;
+        --text: #111;
+        --muted: #555;
+      }
+
+      * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      body {
+        height: auto;
+        display: block;
+        background: #fff;
+        font-size: 11px;
+      }
+
+      header,
+      .filters,
+      #loading-overlay,
+      #btn-csv,
+      .maplibregl-ctrl,
+      #map-metric,
+      #g-group {
+        display: none !important;
+      }
+
+      .layout,
+      .main-scroll {
+        display: block;
+        overflow: visible;
+      }
+
+      main {
+        padding: 0;
+        max-width: none;
+      }
+
+      /* the live WebGL map doesn't survive the print relayout; print a snapshot */
+      #map {
+        display: none !important;
+      }
+
+      #map-print[src] {
+        display: block;
+        width: 100%;
+        border-radius: 8px;
+      }
+
+      .print-only {
+        display: inline;
+      }
+
+      #print-header {
+        display: block;
+        margin-bottom: 1rem;
+        line-height: 1.5;
+      }
+
+      #print-header h1 {
+        font-size: 1.3rem;
+        margin-bottom: 0.3rem;
+      }
+
+      #print-header .meta {
+        color: var(--muted);
+        word-break: break-all;
+      }
+
+      .kpis {
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .card,
+      .kpi {
+        break-inside: avoid;
+      }
+
+      /* print whole tables, not their scroll windows */
+      .card div[style*="overflow"] {
+        max-height: none !important;
+        overflow: visible !important;
+      }
+
+      tr:hover td {
+        background: none;
+      }
+    }
+
     .note a {
       color: var(--accent);
     }
@@ -592,11 +700,17 @@
       <div id="atip-hint" class="rua-hint">R$/m² fora de ⅓× a 3× a mediana da mesma quadra e segmento no filtro (ex.: venda
         em bloco lançada numa unidade, valores simbólicos).</div>
       <button id="btn-share">Copiar link com estes filtros</button>
+      <button id="btn-print" class="secondary">Imprimir / salvar PDF</button>
       <button id="btn-reset" class="secondary">Limpar filtros</button>
     </aside>
 
     <div class="main-scroll">
   <main>
+    <div id="print-header">
+      <h1>Transações imobiliárias (ITBI) — São Paulo</h1>
+      <div id="print-filters"></div>
+      <div class="meta" id="print-meta"></div>
+    </div>
     <div class="kpis" id="kpis"></div>
 
     <div class="grid">
@@ -639,9 +753,11 @@
             <option value="m2">mediana R$/m²</option>
             <option value="val">mediana do valor</option>
           </select>
+          <span class="print-only" data-mirror="map-metric"></span>
           por célula
         </h3>
         <div id="map"></div>
+        <img id="map-print" alt="Mapa" />
         <div id="map-legend" class="map-legend"></div>
       </div>
       <div class="card">
@@ -649,8 +765,9 @@
         <canvas id="chart-ts"></canvas>
       </div>
       <div class="card">
-        <h3>Preço mediano <span class="m2-label">R$/m² construído</span> (quando disponível)</h3>
+        <h3>Mediana <span class="m2-label">R$/m² construído</span> por semestre — seleção × cidade</h3>
         <canvas id="chart-m2"></canvas>
+        <p id="m2-delta" class="map-legend"></p>
       </div>
       <div class="card">
         <h3 style="display:flex;align-items:center;gap:0.5rem">Top
@@ -659,6 +776,7 @@
             <option value="subpref">subprefeituras</option>
             <option value="bairro">bairros (cadastro)</option>
           </select>
+          <span class="print-only" data-mirror="g-group"></span>
           por volume
         </h3>
         <div style="max-height:260px;overflow:auto">
@@ -785,6 +903,7 @@
           center: [-46.63, -23.6],
           zoom: 9.5,
           attributionControl: { compact: true },
+          preserveDrawingBuffer: true, // otherwise the map prints blank
         });
       } catch (e) {
         console.warn(e);
@@ -1173,7 +1292,9 @@
 
     let clickCenter = null; // {lat, lon} picked on the map; overrides the address as center
 
-    function whereClause(ruaSql, areaExpr, radius) {
+    // noLocation: same filters minus every location one (address, radius,
+    // region, bairro) — the city-wide benchmark for the selection
+    function whereClause(ruaSql, areaExpr, radius, { noLocation = false } = {}) {
       const parts = ["1=1"];
       const periodo = $("#f-periodo").value;
       if (periodo && maxDataTransacao) {
@@ -1184,18 +1305,20 @@
       const mes = $("#f-mes").value;
       if (mes) parts.push(`mes_pag = ${+mes}`);
 
-      // With a radius, the address only picks the center (see refresh)
-      if (radius) parts.push(radiusSql(radius));
-      else parts.push(...addressParts(ruaSql));
+      if (!noLocation) {
+        // With a radius, the address only picks the center (see refresh)
+        if (radius) parts.push(radiusSql(radius));
+        else parts.push(...addressParts(ruaSql));
 
-      const inList = (sel) => [...$(sel).selectedOptions].map(o => `'${esc(o.value)}'`).join(",");
-      const subs = inList("#f-subpref");
-      if (subs) parts.push(`subpref IN (${subs})`);
-      const dists = inList("#f-distrito");
-      if (dists) parts.push(`distrito IN (${dists})`);
+        const inList = (sel) => [...$(sel).selectedOptions].map(o => `'${esc(o.value)}'`).join(",");
+        const subs = inList("#f-subpref");
+        if (subs) parts.push(`subpref IN (${subs})`);
+        const dists = inList("#f-distrito");
+        if (dists) parts.push(`distrito IN (${dists})`);
 
-      const bairro = $("#f-bairro").value.trim().toUpperCase();
-      if (bairro) parts.push(`upper(coalesce(bairro, '')) LIKE '%${esc(bairro)}%'`);
+        const bairro = $("#f-bairro").value.trim().toUpperCase();
+        if (bairro) parts.push(`upper(coalesce(bairro, '')) LIKE '%${esc(bairro)}%'`);
+      }
 
       const seg = $("#f-segmento").value;
       if (seg) parts.push(`segmento = '${esc(seg)}'`);
@@ -1308,6 +1431,64 @@
       const [clat, clon] = (ps.get("centro") || "").split(",").map(Number);
       if (Number.isFinite(clat) && Number.isFinite(clon) && clat && clon) clickCenter = { lat: clat, lon: clon };
     }
+
+    // ---------- Printable report ----------
+    // Human-readable list of the active filters, taken from the sidebar labels
+    function filterSummary() {
+      const out = [];
+      for (const label of document.querySelectorAll(".filters label")) {
+        const el = label.querySelector("input, select");
+        if (!el) continue;
+        const name = label.childNodes[0].textContent.trim() || label.textContent.trim();
+        let v = "";
+        if (el.type === "checkbox") v = el.checked ? "sim" : "";
+        else if (el.multiple) {
+          const sel = [...el.selectedOptions];
+          if (sel.length && sel.length < el.options.length) v = sel.map(o => o.value).join(", ");
+        } else if (el.tagName === "SELECT") v = el.selectedIndex > 0 ? el.selectedOptions[0].textContent : "";
+        else v = el.value.trim();
+        if (v) out.push(el.type === "checkbox" ? label.textContent.trim() : `${name}: ${v}`);
+      }
+      return out;
+    }
+
+    // Chart.js colors are tuned for the dark page; swap ink for paper while printing
+    function setChartInk(print) {
+      for (const c of Object.values(charts)) {
+        const legend = c.options.plugins?.legend?.labels;
+        if (legend) legend.color = print ? "#222" : "#e7ecf3";
+        for (const ax of Object.values(c.options.scales || {})) {
+          if (ax.grid && ax.grid.display !== false) ax.grid.color = print ? "#ddd" : "#2d3a4f";
+          if (ax.ticks) ax.ticks.color = print ? "#444" : "#8b9bb4";
+        }
+        c.update("none");
+      }
+    }
+
+    function preparePrint() {
+      // Snapshot first, before the print relayout resizes (and clears) the map
+      if (map && mapLoaded) {
+        try { $("#map-print").src = map.getCanvas().toDataURL("image/png"); } catch (e) { console.warn(e); }
+      }
+      let name = "";
+      try { name = localStorage.getItem("itbi-corretor") || ""; } catch { }
+      const items = filterSummary();
+      $("#print-filters").textContent = items.length ? `Filtros: ${items.join(" · ")}` : "Sem filtros (cidade inteira).";
+      const when = new Date().toLocaleDateString("pt-BR");
+      $("#print-meta").textContent = `${name ? `Preparado por ${name} · ` : ""}${when} · ` +
+        `Fonte: Prefeitura de São Paulo (ITBI)${$("#data-ate").textContent} · ${location.href}`;
+      // Selects are hidden on paper; print their chosen text instead
+      document.querySelectorAll("[data-mirror]").forEach(e => {
+        const sel = document.getElementById(e.dataset.mirror);
+        e.textContent = sel.selectedOptions[0]?.textContent || "";
+      });
+      setChartInk(true);
+    }
+
+    const printMedia = window.matchMedia("print");
+    printMedia.addEventListener("change", (e) => e.matches ? preparePrint() : setChartInk(false));
+    window.addEventListener("beforeprint", preparePrint);
+    window.addEventListener("afterprint", () => setChartInk(false));
 
     // Only offer distritos inside the chosen subprefeituras
     function syncDistritoOptions() {
@@ -1578,28 +1759,79 @@
         }
       });
 
+      // Selection vs the same filters city-wide, by semester of the deal date.
+      // Semesters with < 5 priced deals are gaps; the current semester is left
+      // out because ITBI arrives 1–2 months after the deal.
+      const wCity = whereClause(rua.sql, area, radius, { noLocation: true });
+      const hasLocation = wCity !== wBase;
+      const SEM_MIN_N = 5;
+      const semExpr = `year(data_transacao) * 10 + CASE WHEN month(data_transacao) <= 6 THEN 1 ELSE 2 END`;
+      const [maxY, maxM] = maxDataTransacao.split("-").map(Number);
+      const curSem = maxY * 10 + (maxM <= 6 ? 1 : 2);
+      const semQuery = (from, where) => q(`
+    SELECT ${semExpr} AS sem, median(${m2}) AS med, count(${m2}) AS n
+    FROM ${from}
+    WHERE ${where} AND preco_m2 IS NOT NULL AND ${semExpr} >= 20221 AND ${semExpr} < ${curSem}
+    GROUP BY 1 ORDER BY 1`);
+      const selSem = await semQuery("filt", "true");
+      const citySem = hasLocation ? await semQuery("v_base", wCity) : selSem;
+      const sems = [...new Set([...selSem, ...citySem].map(r => r.sem))].sort();
+      const semLabel = s => `${s % 10}º sem ${Math.floor(s / 10)}`;
+      const byS = (rows) => Object.fromEntries(rows.map(r => [r.sem, r]));
+      const selBy = byS(selSem), cityBy = byS(citySem);
+      const val = (r) => r && r.n >= SEM_MIN_N ? r.med : null;
+      const series = [
+        { label: hasLocation ? "Seleção" : "Cidade (mesmos filtros)", by: selBy, color: hasLocation ? "#3b82f6" : "#8b9bb4", width: 2.5 },
+        ...(hasLocation ? [{ label: "Cidade (mesmos filtros, sem localização)", by: cityBy, color: "#8b9bb4", width: 1.5 }] : []),
+      ];
       charts.m2 = new Chart($("#chart-m2"), {
         type: "line",
         data: {
-          labels: ts.map(r => r.ym),
-          datasets: [{
-            label: priv ? "Mediana R$/m² privativo" : "Mediana R$/m² construído",
-            data: ts.map(r => r.med_m2),
-            borderColor: "#f59e0b",
-            backgroundColor: "rgba(245,158,11,0.15)",
-            fill: true,
-            tension: 0.25
-          }]
+          labels: sems.map(semLabel),
+          datasets: series.map(sr => ({
+            label: sr.label,
+            data: sems.map(s => val(sr.by[s])),
+            borderColor: sr.color,
+            backgroundColor: sr.color,
+            borderWidth: sr.width,
+            pointRadius: 3,
+            spanGaps: false,
+            tension: 0.2,
+          })),
         },
         options: {
           responsive: true,
+          interaction: { mode: "index", intersect: false },
           scales: {
             y: { ticks: { color: "#8b9bb4", callback: v => fmt(v) }, grid: { color: "#2d3a4f" } },
             x: { ticks: { color: "#8b9bb4", maxRotation: 45 }, grid: { display: false } }
           },
-          plugins: { legend: { display: false } }
+          plugins: {
+            legend: { labels: { color: "#e7ecf3", boxWidth: 12 } },
+            tooltip: {
+              callbacks: {
+                label: (c) => {
+                  const r = series[c.datasetIndex].by[sems[c.dataIndex]];
+                  return `${c.dataset.label}: ${fmtMoney(c.parsed.y)} (n=${fmt(r ? r.n : 0)})`;
+                },
+              },
+            },
+          },
         }
       });
+
+      // Change between the first and last semesters where the selection has data
+      const okSems = sems.filter(s => val(selBy[s]) != null && val(cityBy[s]) != null);
+      const pct = (a, b) => `${b >= a ? "+" : "−"}${fmt(Math.abs(100 * (b / a - 1)), 0)}%`;
+      if (okSems.length >= 2) {
+        const [s0, s1] = [okSems[0], okSems[okSems.length - 1]];
+        const sel = pct(selBy[s0].med, selBy[s1].med), city = pct(cityBy[s0].med, cityBy[s1].med);
+        $("#m2-delta").textContent = hasLocation
+          ? `${semLabel(s0)} → ${semLabel(s1)}: seleção ${sel}, cidade ${city} (mediana R$/m², mesmos filtros).`
+          : `${semLabel(s0)} → ${semLabel(s1)}: ${city}. Filtre um endereço, raio ou região para comparar com a cidade.`;
+      } else {
+        $("#m2-delta").textContent = `Poucas vendas com preço por semestre (mínimo ${SEM_MIN_N}) para comparar.`;
+      }
 
       // Top regions, grouped by the card's selector
       const group = $("#g-group").value;
@@ -1828,6 +2060,14 @@
       console.error(e);
       alert("Falha ao exportar: " + e.message);
     }));
+    $("#btn-print").addEventListener("click", () => {
+      let name = "";
+      try { name = localStorage.getItem("itbi-corretor") || ""; } catch { }
+      const typed = window.prompt("Nome para o relatório (opcional):", name);
+      if (typed === null) return;
+      try { localStorage.setItem("itbi-corretor", typed.trim()); } catch { }
+      window.print();
+    });
     $("#btn-share").addEventListener("click", async () => {
       const btn = $("#btn-share"), label = btn.textContent;
       try {
