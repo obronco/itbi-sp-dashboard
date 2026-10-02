@@ -420,7 +420,7 @@
   <header>
     <div>
       <h1>ITBI São Paulo</h1>
-      <div class="sub">Transações imobiliárias com recolhimento de ITBI · 2022–2026</div>
+      <div class="sub">Transações imobiliárias com recolhimento de ITBI · 2022–2026<span id="data-ate"></span></div>
     </div>
     <div id="status" class="status loading">inicializando</div>
   </header>
@@ -473,6 +473,15 @@
           <option value="">Todas</option>
         </select>
       </label>
+      <label>Período (data da transação)
+        <select id="f-periodo">
+          <option value="">Todo o período</option>
+          <option value="6">Últimos 6 meses</option>
+          <option value="12">Últimos 12 meses</option>
+          <option value="24">Últimos 24 meses</option>
+          <option value="36">Últimos 36 meses</option>
+        </select>
+      </label>
       <div class="row">
         <label>Ano pagamento
           <select id="f-ano" multiple size="5"></select>
@@ -503,10 +512,26 @@
           <input id="f-vmax" type="number" placeholder="" />
         </label>
       </div>
+      <div class="row">
+        <label>Área mín (m²)
+          <input id="f-amin" type="number" placeholder="0" />
+        </label>
+        <label>Área máx (m²)
+          <input id="f-amax" type="number" placeholder="" />
+        </label>
+      </div>
+      <div class="rua-hint">Área construída do IPTU, ou privativa quando o fator acima está preenchido.</div>
       <label style="flex-direction:row;align-items:center;gap:0.4rem">
         <input id="f-mercado" type="checkbox" checked style="width:auto" />
         <span style="text-transform:none;letter-spacing:0;font-size:0.85rem;color:var(--text)">Só mercado_ok</span>
       </label>
+      <label style="flex-direction:row;align-items:center;gap:0.4rem">
+        <input id="f-atipicas" type="checkbox" checked style="width:auto" />
+        <span style="text-transform:none;letter-spacing:0;font-size:0.85rem;color:var(--text)">Excluir atípicas</span>
+      </label>
+      <div id="atip-hint" class="rua-hint">R$/m² fora de ⅓× a 3× a mediana da mesma quadra e segmento no filtro (ex.: venda
+        em bloco lançada numa unidade, valores simbólicos).</div>
+      <button id="btn-share">Copiar link com estes filtros</button>
       <button id="btn-reset" class="secondary">Limpar filtros</button>
     </aside>
 
@@ -692,11 +717,11 @@
 
     // Zoom to where the filtered rows are (2nd–98th percentile, so a stray SQL
     // on the other side of town doesn't zoom the map out)
-    async function fitMap(w) {
+    async function fitMap() {
       const [b] = await q(`
     SELECT quantile_cont(lat, 0.02) s, quantile_cont(lat, 0.98) n,
            quantile_cont(lon, 0.02) w, quantile_cont(lon, 0.98) e, count(lat) c
-    FROM v_base WHERE ${w} AND lat IS NOT NULL`);
+    FROM filt WHERE lat IS NOT NULL`);
       if (!b.c) return;
       const pad = 0.003;
       map.fitBounds([[b.w - pad, b.s - pad], [b.e + pad, b.n + pad]], { padding: 30, maxZoom: 15, duration: 0 });
@@ -719,7 +744,7 @@
     }
 
     async function drawMap() {
-      const { w, m2 } = mapState;
+      const { m2 } = mapState;
       const size = mapCellSize();
       mapLastSize = size;
       const metric = $("#map-metric").value;
@@ -727,7 +752,7 @@
     SELECT floor(lat / ${size})::INTEGER AS gy, floor(lon / ${size})::INTEGER AS gx,
            count(*) AS n, median(valor_transacao) AS med_val,
            median(${m2}) AS med_m2, count(preco_m2) AS n_m2
-    FROM v_base WHERE ${w} AND lat IS NOT NULL
+    FROM filt WHERE lat IS NOT NULL
     GROUP BY 1, 2`);
 
       const valueOf = {
@@ -830,7 +855,7 @@
       msg.textContent = "Registrando tabela…";
       await conn.query(`
     CREATE TABLE itbi AS
-    SELECT t.*, g.distrito, g.subpref, g.lat, g.lon
+    SELECT t.*, substr(lpad(t.sql, 11, '0'), 1, 6) AS sq, g.distrito, g.subpref, g.lat, g.lon
     FROM read_parquet('itbi.parquet') t
     LEFT JOIN geo g ON g.sq = substr(lpad(t.sql, 11, '0'), 1, 6);
   `);
@@ -927,8 +952,15 @@
       return String(s).replace(/'/g, "''");
     }
 
-    function whereClause(ruaSql) {
+    const ATIP_K = 3, ATIP_MIN_N = 5;
+    let maxDataTransacao = null; // 'YYYY-MM-DD', latest deal in the data
+
+    function whereClause(ruaSql, areaExpr) {
       const parts = ["1=1"];
+      const periodo = $("#f-periodo").value;
+      if (periodo && maxDataTransacao) {
+        parts.push(`data_transacao >= DATE '${maxDataTransacao}' - INTERVAL ${+periodo} MONTH`);
+      }
       const anos = [...$("#f-ano").selectedOptions].map(o => o.value).filter(Boolean);
       if (anos.length) parts.push(`ano_pag IN (${anos.join(",")})`);
       const mes = $("#f-mes").value;
@@ -968,6 +1000,10 @@
       if (vmin !== "") parts.push(`valor_transacao >= ${+vmin}`);
       const vmax = $("#f-vmax").value;
       if (vmax !== "") parts.push(`valor_transacao <= ${+vmax}`);
+      const amin = $("#f-amin").value;
+      if (amin !== "") parts.push(`${areaExpr} >= ${+amin}`);
+      const amax = $("#f-amax").value;
+      if (amax !== "") parts.push(`${areaExpr} <= ${+amax}`);
       return parts.join(" AND ");
     }
 
@@ -985,6 +1021,11 @@
     }
 
     async function loadFilterOptions() {
+      const [d] = await q(`SELECT strftime(max(data_transacao), '%Y-%m-%d') AS dt, max(ano_mes_pag) AS ym FROM itbi`);
+      maxDataTransacao = d.dt;
+      const [y, m] = d.ym.split("-");
+      $("#data-ate").textContent = ` · dados até ${["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"][+m - 1]}/${y}`;
+
       const anos = await q("SELECT DISTINCT ano_pag FROM itbi ORDER BY 1");
       const sel = $("#f-ano");
       sel.innerHTML = "";
@@ -1014,6 +1055,46 @@
       const dists = await q(`SELECT distrito, any_value(subpref) sp, count(*) c FROM itbi WHERE distrito IS NOT NULL GROUP BY 1 ORDER BY 1`);
       $("#f-distrito").innerHTML = dists.map(r =>
         `<option value="${r.distrito}" data-sub="${r.sp}">${r.distrito} (${fmt(r.c)})</option>`).join("");
+    }
+
+    // ---------- Filters ↔ URL, so a filtered view can be shared as a link ----------
+    const URL_TEXT = [
+      ["cep", "f-cep"], ["rua", "f-rua"], ["num", "f-num"], ["fator", "f-fator"], ["bairro", "f-bairro"],
+      ["seg", "f-segmento"], ["nat", "f-natureza"], ["periodo", "f-periodo"], ["mes", "f-mes"],
+      ["vmin", "f-vmin"], ["vmax", "f-vmax"], ["amin", "f-amin"], ["amax", "f-amax"],
+      ["mapa", "map-metric"], ["top", "g-group"],
+    ];
+    const URL_MULTI = [["sub", "f-subpref"], ["dist", "f-distrito"], ["ano", "f-ano"]];
+    const URL_CHECK = [["mercado", "f-mercado"], ["atip", "f-atipicas"]]; // both default on
+
+    function writeUrlState() {
+      const ps = new URLSearchParams();
+      for (const [k, id] of URL_TEXT) {
+        const el = document.getElementById(id);
+        // selects whose first option is the default are left out when untouched
+        if (el.value !== "" && !(el.tagName === "SELECT" && el.selectedIndex === 0)) ps.set(k, el.value);
+      }
+      for (const [k, id] of URL_MULTI) {
+        const el = document.getElementById(id);
+        const sel = [...el.selectedOptions].map(o => o.value);
+        const isDefault = id === "f-ano" ? sel.length === el.options.length : sel.length === 0;
+        if (!isDefault) ps.set(k, sel.join("|"));
+      }
+      for (const [k, id] of URL_CHECK) if (!document.getElementById(id).checked) ps.set(k, "0");
+      const qs = ps.toString();
+      history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
+    }
+
+    function readUrlState() {
+      const ps = new URLSearchParams(location.search);
+      for (const [k, id] of URL_TEXT) if (ps.has(k)) document.getElementById(id).value = ps.get(k);
+      for (const [k, id] of URL_MULTI) {
+        if (!ps.has(k)) continue;
+        const vals = new Set(ps.get(k).split("|"));
+        for (const o of document.getElementById(id).options) o.selected = vals.has(o.value);
+        if (id === "f-subpref") syncDistritoOptions();
+      }
+      for (const [k, id] of URL_CHECK) if (ps.get(k) === "0") document.getElementById(id).checked = false;
     }
 
     // Only offer distritos inside the chosen subprefeituras
@@ -1071,12 +1152,39 @@
       $("#status").className = "status loading";
       const rua = await resolveRua();
       $("#rua-hint").textContent = rua.hint;
-      const w = whereClause(rua.sql);
-
       const f = areaFactor();
       const priv = f > 0;
       const m2 = priv ? `(preco_m2 / ${f})` : "preco_m2";
       const area = priv ? `(area_m2 * ${f})` : "area_m2";
+      const wBase = whereClause(rua.sql, area);
+
+      // Atypical = R$/m² (or value, when there's no area) outside ⅓×–3× the median
+      // of the current filter for the same segment and fiscal block (≈ building
+      // for condos), judged only where that group has ≥ ATIP_MIN_N deals. For one
+      // building it drops bulk sales booked on a single unit and symbolic values;
+      // being per block, it never flags a whole expensive neighbourhood.
+      // Every chart/table below reads the filtered rows from `filt`, built once here
+      await conn.query(`CREATE OR REPLACE TABLE filt AS SELECT * FROM v_base WHERE ${wBase}`);
+      const atipOn = $("#f-atipicas").checked;
+      let nAtip = 0;
+      if (atipOn) {
+        const [before] = await q(`SELECT count(*) AS n FROM filt`);
+        await conn.query(`
+    CREATE OR REPLACE TABLE ref_atip AS
+    SELECT segmento, sq,
+           median(valor_transacao / area_m2) FILTER (WHERE area_m2 > 0) AS med_m2,
+           median(valor_transacao) AS med_v
+    FROM filt
+    GROUP BY 1, 2
+    HAVING count(*) >= ${ATIP_MIN_N}`);
+        await conn.query(`
+    DELETE FROM filt USING ref_atip r
+    WHERE r.segmento IS NOT DISTINCT FROM filt.segmento AND r.sq = filt.sq
+      AND (CASE WHEN filt.area_m2 > 0 AND r.med_m2 > 0 THEN filt.valor_transacao / filt.area_m2 / r.med_m2
+                ELSE filt.valor_transacao / r.med_v END) NOT BETWEEN 1.0 / ${ATIP_K} AND ${ATIP_K}`);
+        const [after] = await q(`SELECT count(*) AS n FROM filt`);
+        nAtip = before.n - after.n;
+      }
       document.querySelectorAll(".m2-label").forEach(e => {
         e.textContent = priv ? (e.closest("th") ? "R$/m² priv." : "R$/m² privativo") : (e.closest("th") ? "R$/m² constr." : "R$/m² construído");
       });
@@ -1093,8 +1201,12 @@
       count(preco_m2) AS n_m2,
       count(DISTINCT (logradouro, numero)) AS n_end,
       count(tipo_financiamento) AS n_fin
-    FROM v_base WHERE ${w}
+    FROM filt
   `))[0];
+
+      $("#atip-hint").textContent = $("#f-atipicas").checked
+        ? `${fmt(nAtip)} atípicas excluídas (R$/m² fora de ⅓× a 3× a mediana da mesma quadra e segmento).`
+        : "R$/m² fora de ⅓× a 3× a mediana da mesma quadra e segmento no filtro (ex.: venda em bloco lançada numa unidade, valores simbólicos).";
 
       $("#kpis").innerHTML = `
     <div class="kpi"><div class="label">Transações</div><div class="value">${fmt(k.n)}</div></div>
@@ -1113,7 +1225,7 @@
            count(*) AS n,
            sum(valor_transacao)/1e9 AS vgv_bi,
            median(${m2}) AS med_m2
-    FROM v_base WHERE ${w}
+    FROM filt
     GROUP BY 1 ORDER BY 1
   `);
 
@@ -1170,7 +1282,7 @@
            count(*) AS n,
            median(valor_transacao) AS med_val,
            median(${m2}) AS med_m2
-    FROM v_base WHERE ${w}
+    FROM filt
     GROUP BY 1
     ORDER BY n DESC
     LIMIT 15
@@ -1189,7 +1301,7 @@
       // Natureza pie-ish
       const nats = await q(`
     SELECT natureza, count(*) AS n
-    FROM v_base WHERE ${w}
+    FROM filt
     GROUP BY 1 ORDER BY n DESC LIMIT 8
   `);
       const colors = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4", "#ec4899", "#84cc16"];
@@ -1221,7 +1333,7 @@
         ELSE '≥ 5M'
       END AS faixa,
       count(*) AS n
-    FROM v_base WHERE ${w}
+    FROM filt
     GROUP BY 1
     ORDER BY min(valor_transacao)
   `);
@@ -1261,8 +1373,7 @@
       ${area} AS area_m2,
       ${m2} AS preco_m2,
       proporcao_pct
-    FROM v_base
-    WHERE ${w}
+    FROM filt
     ORDER BY data_transacao DESC NULLS LAST, valor_transacao DESC
     LIMIT 100
   `);
@@ -1309,13 +1420,16 @@
       }
 
       if (map) {
-        mapState = { w, m2 };
-        if (w !== mapLastFitW) {
-          mapLastFitW = w;
-          await fitMap(w);
+        mapState = { m2 };
+        const fitKey = `${wBase}|${atipOn}`;
+        if (fitKey !== mapLastFitW) {
+          mapLastFitW = fitKey;
+          await fitMap();
         }
         scheduleMap();
       }
+
+      writeUrlState();
 
       $("#status").textContent = `${fmt(k.n)} transações filtradas · ${fmt(performance.now() - t0)} ms`;
       $("#status").className = "status ok";
@@ -1325,6 +1439,7 @@
       try {
         await initDuckDB();
         await loadFilterOptions();
+        readUrlState();
         initMap();
         $("#loading-overlay").classList.add("hidden");
         $("#status").textContent = "pronto";
@@ -1353,7 +1468,11 @@
       $("#f-vmin").value = "";
       $("#f-vmax").value = "";
       $("#f-fator").value = "";
+      $("#f-periodo").value = "";
+      $("#f-amin").value = "";
+      $("#f-amax").value = "";
       $("#f-mercado").checked = true;
+      $("#f-atipicas").checked = true;
       scheduleRefresh();
     });
 
@@ -1367,6 +1486,16 @@
       if (e.target.matches("select, input[type=checkbox]")) scheduleRefresh();
     });
     $("#g-group").addEventListener("change", () => scheduleRefresh());
+    $("#btn-share").addEventListener("click", async () => {
+      const btn = $("#btn-share"), label = btn.textContent;
+      try {
+        await navigator.clipboard.writeText(location.href);
+        btn.textContent = "Link copiado ✓";
+      } catch {
+        window.prompt("Copie o link:", location.href);
+      }
+      setTimeout(() => (btn.textContent = label), 2000);
+    });
     filtersEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); scheduleRefresh(); }
     });

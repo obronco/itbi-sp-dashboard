@@ -57,6 +57,9 @@ Official page: https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31
 - Means are sensitive to large corporate deals; prefer medians.
 - `area_m2` / `preco_m2` use IPTU *built* area, which for condominium units includes the share of common areas and parking — so R$/m² runs below the private-area R$/m² quoted in listings. The dashboard has an optional per-building *privativa ÷ construída* factor.
 - **Distrito / subprefeitura** come from `geo/quadras_geo.parquet`: the centroid of each fiscal block (setor + quadra, the first 6 SQL digits) from the [GeoSampa](https://geosampa.prefeitura.sp.gov.br/) WFS, spatially joined to the official 96 distritos / 32 subprefeituras. ~99.95% of rows match. The raw `bairro` field is free text and empty for ~half the rows.
+- **Atypical deals** (on by default, toggle in the sidebar): rows whose R$/m² (or value, without area) is outside ⅓×–3× the median of the *current filter* for the same segment and fiscal block, judged only where that group has ≥ 5 deals — catches bulk sales booked on a single unit and symbolic values without flagging expensive neighbourhoods.
+- **Período** filters on the transaction date, relative to the latest transaction in the data (the ITBI is paid 1–2 months after the deal, so the last months are incomplete).
+- All filters are mirrored in the page URL, so a filtered view can be shared as a link.
 - Exact re-published DTI rows (same property, date, value and street) are deduplicated before the parquet is written.
 
 ## License / attribution
