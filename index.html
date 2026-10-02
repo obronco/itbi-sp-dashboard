@@ -912,6 +912,20 @@
         return;
       }
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+      // "Locate me": blue dot + accuracy circle, and the position becomes the
+      // radius center (500 m if none chosen) — deals around where you stand.
+      // One-shot (no tracking) so walking around doesn't re-query constantly.
+      const geolocate = new maplibregl.GeolocateControl({
+        positionOptions: { enableHighAccuracy: true },
+        trackUserLocation: false,
+        showAccuracyCircle: true,
+      });
+      map.addControl(geolocate, "top-right");
+      geolocate.on("geolocate", (pos) => {
+        clickCenter = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), fromGps: true };
+        if (!$("#f-raio").value) $("#f-raio").value = "500";
+        scheduleRefresh();
+      });
       map.on("load", () => {
         map.addSource("cells", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
         // Cells go above roads/buildings but under the trailing block of labels
@@ -1290,7 +1304,8 @@
       });
     }
 
-    let clickCenter = null; // {lat, lon} picked on the map; overrides the address as center
+    // {lat, lon, fromGps?} picked on the map or by "locate me"; overrides the address as center
+    let clickCenter = null;
 
     // noLocation: same filters minus every location one (address, radius,
     // region, bairro) — the city-wide benchmark for the selection
@@ -1413,7 +1428,8 @@
         if (!isDefault) ps.set(k, sel.join("|"));
       }
       for (const [k, id] of URL_CHECK) if (!document.getElementById(id).checked) ps.set(k, "0");
-      if (clickCenter && $("#f-raio").value) ps.set("centro", `${clickCenter.lat},${clickCenter.lon}`);
+      // the user's own position stays out of shareable links
+      if (clickCenter && !clickCenter.fromGps && $("#f-raio").value) ps.set("centro", `${clickCenter.lat},${clickCenter.lon}`);
       const qs = ps.toString();
       history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
     }
@@ -1643,7 +1659,7 @@
       let radius = null;
       const rh = $("#raio-hint");
       if (raio) {
-        let center = clickCenter && { ...clickCenter, label: "ponto clicado no mapa" };
+        let center = clickCenter && { ...clickCenter, label: clickCenter.fromGps ? "sua localização" : "ponto clicado no mapa" };
         const ap = addressParts(rua.sql);
         if (!center && ap.length) {
           const [c] = await q(`SELECT median(lat) AS lat, median(lon) AS lon FROM v_base WHERE ${ap.join(" AND ")} AND lat IS NOT NULL`);
