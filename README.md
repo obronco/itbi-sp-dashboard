@@ -59,6 +59,8 @@ Official page: https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31
 - **Distrito / subprefeitura** come from `geo/quadras_geo.parquet`: the centroid of each fiscal block (setor + quadra, the first 6 SQL digits) from the [GeoSampa](https://geosampa.prefeitura.sp.gov.br/) WFS, spatially joined to the official 96 distritos / 32 subprefeituras. ~99.95% of rows match. The raw `bairro` field is free text and empty for ~half the rows.
 - **Atypical deals** (on by default, toggle in the sidebar): rows whose R$/m² (or value, without area) is outside ⅓×–3× the median of the *current filter* for the same segment and fiscal block, judged only where that group has ≥ 5 deals — catches bulk sales booked on a single unit and symbolic values without flagging expensive neighbourhoods.
 - **Período** filters on the transaction date, relative to the latest transaction in the data (the ITBI is paid 1–2 months after the deal, so the last months are incomplete).
+- When the filter lands on a single address, a **building sheet** shows sales per year, unit types (grouped by IPTU area, which units of one type share) and the latest sales.
+- **Exportar CSV** downloads every filtered row (not just the 100 shown), formatted for Excel pt-BR (`;` separator, decimal comma, UTF-8 BOM).
 - All filters are mirrored in the page URL, so a filtered view can be shared as a link.
 - Exact re-published DTI rows (same property, date, value and street) are deduplicated before the parquet is written.
 

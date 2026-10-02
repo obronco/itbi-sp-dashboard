@@ -177,6 +177,55 @@
       display: none;
     }
 
+    .ficha-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+
+    .ficha-grid .full-row {
+      grid-column: 1 / -1;
+    }
+
+    .ficha-grid td {
+      white-space: nowrap;
+    }
+
+    @media (max-width: 1100px) {
+      .ficha-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .ficha-grid h4 {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.4rem;
+    }
+
+    .ficha-grid > div {
+      min-width: 0;
+      overflow-x: auto;
+    }
+
+    .card h3 .btn-small {
+      margin-left: auto;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.25rem 0.7rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    .card h3 .btn-small:hover {
+      border-color: var(--accent);
+    }
+
     .inline-select {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -540,6 +589,38 @@
     <div class="kpis" id="kpis"></div>
 
     <div class="grid">
+      <div class="card full" id="ficha" hidden>
+        <h3 id="ficha-title">Ficha do prédio</h3>
+        <div class="ficha-grid">
+          <div class="full-row">
+            <h4>Tipos de unidade (por área)</h4>
+            <table id="ficha-tipos">
+              <thead>
+                <tr><th><span class="area-label">Área constr.</span></th><th>Segmento</th><th>Vendas</th><th>Mediana R$</th><th>Med. <span class="m2-label">R$/m² constr.</span></th><th>Última</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div>
+            <h4>Vendas por ano (data da transação)</h4>
+            <table id="ficha-anos">
+              <thead>
+                <tr><th>Ano</th><th>Vendas</th><th>Mediana R$</th><th>Med. <span class="m2-label">R$/m² constr.</span></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div>
+            <h4>Últimas vendas</h4>
+            <table id="ficha-ultimas">
+              <thead>
+                <tr><th>Data</th><th>Unidade</th><th>Valor</th><th><span class="m2-label">R$/m² constr.</span></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
       <div class="card full">
         <h3 style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">Mapa —
           <select id="map-metric" class="inline-select">
@@ -593,7 +674,10 @@
         <canvas id="chart-hist" height="120"></canvas>
       </div>
       <div class="card full">
-        <h3>Transações (até 100) — útil com CEP / rua</h3>
+        <h3 style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+          <span id="tx-title">Transações mais recentes</span>
+          <button id="btn-csv" class="btn-small">Exportar CSV</button>
+        </h3>
         <div style="max-height:360px;overflow:auto">
           <table id="tbl-tx">
             <thead>
@@ -1146,6 +1230,96 @@
       debounceTimer = setTimeout(scheduleRefresh, 250);
     }
 
+    // Expressions of the last refresh (area/R$/m² depend on the privativa factor)
+    let lastExprs = { area: "area_m2", m2: "preco_m2", priv: false };
+
+    function fmtDateBR(d) {
+      if (d == null) return "—";
+      const dt = d instanceof Date ? d : new Date(d);
+      return Number.isNaN(dt.getTime()) ? String(d).slice(0, 10) : dt.toLocaleDateString("pt-BR", { timeZone: "UTC" });
+    }
+
+    // CSV for Excel pt-BR: ";" separator, decimal comma, UTF-8 BOM
+    async function exportCsv() {
+      const { area, m2, priv } = lastExprs;
+      const [{ n }] = await q(`SELECT count(*) AS n FROM filt`);
+      if (!n) return;
+      if (n > 100000 && !confirm(`Exportar ${fmt(n)} linhas? O arquivo pode passar de ${fmt(n * 250 / 1e6)} MB.`)) return;
+      const btn = $("#btn-csv"), label = btn.textContent;
+      btn.textContent = "Gerando…";
+      try {
+        const rows = await q(`
+    SELECT strftime(data_transacao, '%Y-%m-%d') AS data_transacao, ano_mes_pag AS mes_pagamento,
+           logradouro, numero, complemento, bairro, distrito, subpref AS subprefeitura, cep, sql,
+           segmento, natureza, valor_transacao,
+           round(${area}, 2) AS ${priv ? "area_privativa_m2" : "area_construida_m2"},
+           round(${m2}, 2) AS ${priv ? "preco_m2_privativo" : "preco_m2_construido"},
+           proporcao_pct, tipo_financiamento, lat, lon
+    FROM filt
+    ORDER BY data_transacao DESC NULLS LAST`);
+        const cols = Object.keys(rows[0]);
+        const cell = v => {
+          if (v == null) return "";
+          if (typeof v === "number") return String(Number.isInteger(v) ? v : +v.toFixed(6)).replace(".", ",");
+          const t = String(v);
+          return /[;"\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+        };
+        const lines = [cols.join(";"), ...rows.map(r => cols.map(c => cell(r[c])).join(";"))];
+        const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        const rua = $("#f-rua").value.trim().replace(/[^\w]+/g, "-").toLowerCase();
+        a.download = `itbi-sp${rua ? "-" + rua : ""}${$("#f-num").value ? "-" + $("#f-num").value.replace(/\D/g, "") : ""}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } finally {
+        btn.textContent = label;
+      }
+    }
+
+    // Building sheet: shown when the filter lands on exactly one address
+    async function renderFicha(k, area, m2) {
+      const card = $("#ficha");
+      const [addr] = k.n_end === 1 ? await q(`
+    SELECT any_value(logradouro) AS logradouro, any_value(numero) AS numero,
+           any_value(distrito) AS distrito, any_value(subpref) AS subpref
+    FROM filt`) : [null];
+      if (!addr || addr.numero == null || addr.numero === 99999) { card.hidden = true; return; }
+      card.hidden = false;
+      $("#ficha-title").textContent = `Ficha do prédio — ${addr.logradouro}, ${addr.numero}` +
+        (addr.distrito ? ` · ${addr.distrito}` : "") + ` · ${fmt(k.n)} vendas no filtro`;
+
+      const anos = await q(`
+    SELECT year(data_transacao) AS ano, count(*) AS n,
+           median(valor_transacao) AS med_val, median(${m2}) AS med_m2
+    FROM filt GROUP BY 1 ORDER BY 1 DESC`);
+      $("#ficha-anos tbody").innerHTML = anos.map(r => `<tr>
+      <td>${r.ano}</td><td class="num">${fmt(r.n)}</td>
+      <td class="num">${fmtMoney(r.med_val)}</td><td class="num">${r.med_m2 != null ? fmtMoney(r.med_m2) : "—"}</td>
+    </tr>`).join("");
+
+      // Units of one type share the same IPTU area, so area ≈ tipologia
+      const tipos = await q(`
+    SELECT round(${area}) AS area, segmento, count(*) AS n,
+           median(valor_transacao) AS med_val, median(${m2}) AS med_m2,
+           max(data_transacao) AS ult_data, arg_max(valor_transacao, data_transacao) AS ult_val
+    FROM filt WHERE area_m2 > 0
+    GROUP BY 1, 2 ORDER BY n DESC, area LIMIT 12`);
+      $("#ficha-tipos tbody").innerHTML = tipos.map(r => `<tr>
+      <td class="num">${fmt(r.area)} m²</td><td>${r.segmento || "—"}</td><td class="num">${fmt(r.n)}</td>
+      <td class="num">${fmtMoney(r.med_val)}</td><td class="num">${r.med_m2 != null ? fmtMoney(r.med_m2) : "—"}</td>
+      <td>${fmtDateBR(r.ult_data)} · ${fmtCompact(r.ult_val)}</td>
+    </tr>`).join("") || `<tr><td colspan="6" style="color:var(--muted)">Sem área no cadastro.</td></tr>`;
+
+      const ult = await q(`
+    SELECT data_transacao, coalesce(complemento, '—') AS complemento, valor_transacao, ${m2} AS preco_m2
+    FROM filt ORDER BY data_transacao DESC NULLS LAST LIMIT 8`);
+      $("#ficha-ultimas tbody").innerHTML = ult.map(r => `<tr>
+      <td>${fmtDateBR(r.data_transacao)}</td><td>${r.complemento}</td>
+      <td class="num">${fmtMoney(r.valor_transacao)}</td><td class="num">${r.preco_m2 != null ? fmtMoney(r.preco_m2) : "—"}</td>
+    </tr>`).join("");
+    }
+
     async function refresh() {
       const t0 = performance.now();
       $("#status").textContent = "consultando…";
@@ -1157,6 +1331,7 @@
       const m2 = priv ? `(preco_m2 / ${f})` : "preco_m2";
       const area = priv ? `(area_m2 * ${f})` : "area_m2";
       const wBase = whereClause(rua.sql, area);
+      lastExprs = { area, m2, priv };
 
       // Atypical = R$/m² (or value, when there's no area) outside ⅓×–3× the median
       // of the current filter for the same segment and fiscal block (≈ building
@@ -1403,6 +1578,11 @@
       <td class="num">${r.proporcao_pct != null ? fmt(r.proporcao_pct, 1) : "—"}</td>
     </tr>`;
       }).join("") || `<tr><td colspan="9" style="color:var(--muted)">Nenhuma transação com os filtros atuais.</td></tr>`;
+      $("#tx-title").textContent = k.n > 100
+        ? `Transações — 100 mais recentes de ${fmt(k.n)} (exporte para ver todas)`
+        : `Transações — ${fmt(k.n)}`;
+
+      await renderFicha(k, area, m2);
 
       const fh = $("#fator-hint");
       fh.style.color = "";
@@ -1486,6 +1666,10 @@
       if (e.target.matches("select, input[type=checkbox]")) scheduleRefresh();
     });
     $("#g-group").addEventListener("change", () => scheduleRefresh());
+    $("#btn-csv").addEventListener("click", () => exportCsv().catch(e => {
+      console.error(e);
+      alert("Falha ao exportar: " + e.message);
+    }));
     $("#btn-share").addEventListener("click", async () => {
       const btn = $("#btn-share"), label = btn.textContent;
       try {
