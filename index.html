@@ -754,10 +754,26 @@
     let mapBusy = false, mapPending = false;
     let mapCells = null; // last fetched cells: { cells, size, metric }
 
-    // Cell edge in degrees, halving per zoom level: ~2 km at city zoom → ~70 m close up
+    // Hex grid in a local metric plane: degrees → meters at São Paulo's latitude
+    const HEX_KX = 111320 * Math.cos(-23.55 * Math.PI / 180), HEX_KY = 110574;
+
+    // Hexagon radius (center → vertex) in meters, halving per zoom level:
+    // ~2.4 km across at city zoom → ~80 m close up
     function mapCellSize() {
       const z = Math.floor(map.getZoom());
-      return Math.max(0.000625, 0.02 / 2 ** Math.max(0, z - 10));
+      return Math.max(45, 1400 / 2 ** Math.max(0, z - 10));
+    }
+
+    // Pointy-top hexagon around axial cell (q, r) of radius R, as [lon, lat] ring
+    function hexCenter(q, r, R) {
+      return [R * Math.sqrt(3) * (q + r / 2) / HEX_KX, R * 1.5 * r / HEX_KY];
+    }
+    function hexRing(q, r, R) {
+      const [lon, lat] = hexCenter(q, r, R);
+      return Array.from({ length: 7 }, (_, i) => {
+        const a = Math.PI / 180 * (60 * (i % 6) - 30);
+        return [lon + R * Math.cos(a) / HEX_KX, lat + R * Math.sin(a) / HEX_KY];
+      });
     }
 
     function initMap() {
@@ -887,10 +903,21 @@
       mapLastSize = size;
       const metric = $("#map-metric").value;
       const rows = await q(`
-    SELECT floor(lat / ${size})::INTEGER AS gy, floor(lon / ${size})::INTEGER AS gx,
+    -- point → fractional axial hex coords → cube rounding (redblobgames.com/grids/hexagons)
+    WITH f AS (
+      SELECT *, (sqrt(3) / 3 * lon * ${HEX_KX} - lat * ${HEX_KY} / 3) / ${size} AS fq,
+                (2.0 / 3 * lat * ${HEX_KY}) / ${size} AS fr
+      FROM filt WHERE lat IS NOT NULL
+    ), c AS (
+      SELECT *, round(fq) AS rq, round(fr) AS rr, round(-fq - fr) AS rs,
+             abs(round(fq) - fq) AS dq, abs(round(fr) - fr) AS dr, abs(round(-fq - fr) + fq + fr) AS ds
+      FROM f
+    )
+    SELECT (CASE WHEN dq > dr AND dq > ds THEN -rr - rs ELSE rq END)::INTEGER AS hq,
+           (CASE WHEN dq > dr AND dq > ds THEN rr WHEN dr > ds THEN -rq - rs ELSE rr END)::INTEGER AS hr,
            count(*) AS n, median(valor_transacao) AS med_val,
            median(${m2}) AS med_m2, count(preco_m2) AS n_m2
-    FROM filt WHERE lat IS NOT NULL
+    FROM c
     GROUP BY 1, 2`);
 
       const valueOf = {
@@ -910,7 +937,7 @@
       const { cells, size, metric } = mapCells;
       const b = map.getBounds();
       const visible = cells.filter(c => {
-        const lat = (c.gy + 0.5) * size, lon = (c.gx + 0.5) * size;
+        const [lon, lat] = hexCenter(c.hq, c.hr, size);
         return lat >= b.getSouth() && lat <= b.getNorth() && lon >= b.getWest() && lon <= b.getEast();
       });
       const basis = visible.length ? visible : cells;
@@ -933,10 +960,9 @@
       mapCells.paintedKey = key;
 
       const features = cells.map(c => {
-        const x = c.gx * size, y = c.gy * size;
         return {
           type: "Feature",
-          geometry: { type: "Polygon", coordinates: [[[x, y], [x + size, y], [x + size, y + size], [x, y + size], [x, y]]] },
+          geometry: { type: "Polygon", coordinates: [hexRing(c.hq, c.hr, size)] },
           properties: { n: c.n, med_val: c.med_val, med_m2: c.med_m2, n_m2: c.n_m2, color: ramp[classOf(c.v)] },
         };
       });
@@ -949,11 +975,11 @@
         m2: areaFactor() > 0 ? "Mediana R$/m² privativo" : "Mediana R$/m² construído",
         val: "Mediana do valor",
       }[metric];
-      const meters = Math.round(size * 111000 / 10) * 10;
+      const meters = Math.round(size * Math.sqrt(3) / 10) * 10; // flat-to-flat width
       $("#map-legend").innerHTML = cells.length
         ? `<span>${metricLabel}:</span>` +
           ramp.map((col, i) => `<span class="sw"><i style="background:${col}"></i>${i === 0 ? "" : "≥ "}${fmtV(edges[i])}</span>`).join("") +
-          `<span>· célula ≈ ${meters >= 1000 ? fmt(meters / 1000, 1) + " km" : meters + " m"}` +
+          `<span>· hexágono ≈ ${meters >= 1000 ? fmt(meters / 1000, 1) + " km" : meters + " m"}` +
           (metric === "n" ? "" : ` · só células com ≥ ${MAP_MIN_N} transações`) +
           ` · cores relativas à área visível</span>`
         : `<span>Nenhuma transação com localização para os filtros atuais.</span>`;
