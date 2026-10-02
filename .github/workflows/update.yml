@@ -86,6 +86,8 @@ jobs:
           mkdir -p site
           cp index.html site/
           cp itbi_sp_5y.parquet site/
+          mkdir -p site/geo
+          cp geo/quadras_geo.parquet site/geo/
           ls -lh site/
 
       - name: Upload Pages artifact

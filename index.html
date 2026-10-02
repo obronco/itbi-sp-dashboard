@@ -131,6 +131,15 @@
       }
     }
 
+    .inline-select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.15rem 0.3rem;
+      font-size: 0.85rem;
+    }
+
     .rua-hint {
       margin-top: -0.45rem;
       font-size: 0.75rem;
@@ -377,7 +386,14 @@
       </label>
       <div id="fator-hint" class="rua-hint">Opcional. A área do IPTU inclui áreas comuns e vagas; informe a
         relação do prédio para ver R$/m² privativo.</div>
-      <label>Bairro (contém)
+      <label>Subprefeitura
+        <select id="f-subpref" multiple size="5"></select>
+      </label>
+      <label>Distrito
+        <select id="f-distrito" multiple size="6"></select>
+      </label>
+      <div class="rua-hint">Ctrl/⌘ + clique para vários; nenhum = todos. Região oficial, derivada do SQL.</div>
+      <label>Bairro (texto do cadastro)
         <input id="f-bairro" type="text" placeholder="ex: PINHEIROS" />
       </label>
       <label>Segmento
@@ -450,13 +466,20 @@
         <canvas id="chart-m2"></canvas>
       </div>
       <div class="card">
-        <h3>Top bairros por volume</h3>
+        <h3 style="display:flex;align-items:center;gap:0.5rem">Top
+          <select id="g-group" class="inline-select">
+            <option value="distrito">distritos</option>
+            <option value="subpref">subprefeituras</option>
+            <option value="bairro">bairros (cadastro)</option>
+          </select>
+          por volume
+        </h3>
         <div style="max-height:260px;overflow:auto">
           <table id="tbl-bairros">
             <thead>
               <tr>
                 <th>#</th>
-                <th>Bairro</th>
+                <th id="g-col">Distrito</th>
                 <th>Transações</th>
                 <th>Mediana R$</th>
                 <th>Med. <span class="m2-label">R$/m² constr.</span></th>
@@ -508,6 +531,9 @@
       Preço/m² só quando área está na faixa do segmento e o resultado fica entre R$ 100 e R$ 150.000. Marque “Só
       mercado_ok” para compra e venda + transferência total + área útil (recomendado para preços de mercado). Busque por
       CEP (5–8 dígitos) ou nome do logradouro para ver negócios no seu entorno.
+      Distrito e subprefeitura vêm da quadra fiscal do imóvel (6 primeiros dígitos do SQL) cruzada com os mapas
+      oficiais do <a href="https://geosampa.prefeitura.sp.gov.br/" target="_blank" rel="noopener">GeoSampa</a>;
+      o campo “bairro” é texto livre do cadastro e está vazio em cerca de metade das linhas.
       Dados processados localmente via DuckDB-WASM — nenhum dado sai do seu navegador.
     </p>
   </main>
@@ -516,6 +542,8 @@
 
   <script type="module">
     const PARQUET_URL = "./itbi_sp_5y.parquet";
+    // setor+quadra (first 6 SQL digits) → centroid, distrito, subprefeitura
+    const GEO_URL = "./geo/quadras_geo.parquet";
 
     const $ = (s) => document.querySelector(s);
     const fmt = (n, d = 0) => n == null || Number.isNaN(n) ? "—" :
@@ -562,6 +590,7 @@
       conn = await db.connect();
 
       msg.textContent = "Baixando parquet…";
+      const geoRes = fetch(GEO_URL).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
       const res = await fetch(PARQUET_URL);
       if (!res.ok) throw new Error("Falha ao baixar " + PARQUET_URL + " (" + res.status + ")");
       const len = +res.headers.get("content-length");
@@ -569,10 +598,23 @@
       const buf = await res.arrayBuffer();
       await db.registerFileBuffer("itbi.parquet", new Uint8Array(buf));
 
+      // Region lookup is optional: without it the dashboard still works, just
+      // with empty distrito/subprefeitura
+      const geoBuf = await geoRes;
+      if (geoBuf) {
+        await db.registerFileBuffer("geo.parquet", new Uint8Array(geoBuf));
+        await conn.query(`CREATE TABLE geo AS SELECT * FROM read_parquet('geo.parquet')`);
+      } else {
+        console.warn("Sem " + GEO_URL + " — distrito/subprefeitura indisponíveis");
+        await conn.query(`CREATE TABLE geo (sq VARCHAR, lat FLOAT, lon FLOAT, distrito VARCHAR, subpref VARCHAR)`);
+      }
+
       msg.textContent = "Registrando tabela…";
       await conn.query(`
     CREATE TABLE itbi AS
-    SELECT * FROM read_parquet('itbi.parquet');
+    SELECT t.*, g.distrito, g.subpref, g.lat, g.lon
+    FROM read_parquet('itbi.parquet') t
+    LEFT JOIN geo g ON g.sq = substr(lpad(t.sql, 11, '0'), 1, 6);
   `);
 
       // useful indexes-ish via views
@@ -687,6 +729,12 @@
       const num = $("#f-num").value.replace(/\D/g, "");
       if (num) parts.push(`numero = ${+num}`);
 
+      const inList = (sel) => [...$(sel).selectedOptions].map(o => `'${esc(o.value)}'`).join(",");
+      const subs = inList("#f-subpref");
+      if (subs) parts.push(`subpref IN (${subs})`);
+      const dists = inList("#f-distrito");
+      if (dists) parts.push(`distrito IN (${dists})`);
+
       const bairro = $("#f-bairro").value.trim().toUpperCase();
       if (bairro) parts.push(`upper(coalesce(bairro, '')) LIKE '%${esc(bairro)}%'`);
 
@@ -742,6 +790,21 @@
         sn.appendChild(o);
       });
 
+      const subs = await q(`SELECT subpref, count(*) c FROM itbi WHERE subpref IS NOT NULL GROUP BY 1 ORDER BY 1`);
+      $("#f-subpref").innerHTML = subs.map(r =>
+        `<option value="${r.subpref}">${r.subpref} (${fmt(r.c)})</option>`).join("");
+      const dists = await q(`SELECT distrito, any_value(subpref) sp, count(*) c FROM itbi WHERE distrito IS NOT NULL GROUP BY 1 ORDER BY 1`);
+      $("#f-distrito").innerHTML = dists.map(r =>
+        `<option value="${r.distrito}" data-sub="${r.sp}">${r.distrito} (${fmt(r.c)})</option>`).join("");
+    }
+
+    // Only offer distritos inside the chosen subprefeituras
+    function syncDistritoOptions() {
+      const subs = new Set([...$("#f-subpref").selectedOptions].map(o => o.value));
+      for (const o of $("#f-distrito").options) {
+        o.hidden = subs.size > 0 && !subs.has(o.dataset.sub);
+        if (o.hidden) o.selected = false;
+      }
     }
 
     function destroyCharts() {
@@ -880,9 +943,12 @@
         }
       });
 
-      // Top bairros
+      // Top regions, grouped by the card's selector
+      const group = $("#g-group").value;
+      const groupCol = { distrito: "distrito", subpref: "subpref", bairro: "bairro" }[group];
+      $("#g-col").textContent = { distrito: "Distrito", subpref: "Subprefeitura", bairro: "Bairro" }[group];
       const bairros = await q(`
-    SELECT coalesce(bairro, '(sem bairro)') AS bairro,
+    SELECT coalesce(${groupCol}, '(sem ${group === "subpref" ? "subprefeitura" : group})') AS bairro,
            count(*) AS n,
            median(valor_transacao) AS med_val,
            median(${m2}) AS med_m2
@@ -970,6 +1036,7 @@
       numero,
       coalesce(complemento, '') AS complemento,
       coalesce(bairro, '') AS bairro,
+      coalesce(distrito, '') AS distrito,
       cep,
       coalesce(segmento, '') AS segmento,
       valor_transacao,
@@ -993,7 +1060,8 @@
       tbody.innerHTML = txs.map(r => {
         const end = [r.logradouro, r.numero != null ? r.numero : "", r.complemento]
           .filter(x => x !== "" && x != null).join(", ");
-        const bairro = r.bairro ? ` <span style="color:var(--muted)">· ${r.bairro}</span>` : "";
+        const regiao = [r.bairro, r.distrito].filter(Boolean).join(" · ");
+        const bairro = regiao ? ` <span style="color:var(--muted)">· ${regiao}</span>` : "";
         return `<tr>
       <td>${r.ano_mes_pag || "—"}</td>
       <td>${fmtDate(r.data_transacao)}</td>
@@ -1049,6 +1117,9 @@
       $("#f-rua").value = "";
       $("#f-num").value = "";
       $("#f-bairro").value = "";
+      [...$("#f-subpref").options].forEach(o => o.selected = false);
+      [...$("#f-distrito").options].forEach(o => o.selected = false);
+      syncDistritoOptions();
       $("#f-segmento").value = "";
       $("#f-natureza").value = "";
       $("#f-vmin").value = "";
@@ -1064,8 +1135,10 @@
       if (e.target.matches("input[type=text], input[type=number]")) debouncedRefresh();
     });
     filtersEl.addEventListener("change", (e) => {
+      if (e.target.id === "f-subpref") syncDistritoOptions();
       if (e.target.matches("select, input[type=checkbox]")) scheduleRefresh();
     });
+    $("#g-group").addEventListener("change", () => scheduleRefresh());
     filtersEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); scheduleRefresh(); }
     });

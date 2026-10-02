@@ -25,6 +25,10 @@ python scripts/download_itbi.py
 # Clean + build itbi_sp_5y.parquet
 python scripts/preprocess_itbi.py
 
+# (Optional) Rebuild the block → distrito/subprefeitura lookup from GeoSampa.
+# geo/quadras_geo.parquet is committed; refresh it only occasionally.
+python scripts/build_quadras_geo.py
+
 # Serve (must be same origin for the parquet fetch)
 python -m http.server 8080
 # open http://localhost:8080
@@ -51,6 +55,8 @@ Official page: https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31
 - Self-declared values; rural properties and PPI parcelamentos are excluded by the source.
 - `preco_m2` is computed only when area (built area, or land area for `terreno`) is within the segment's expected band and the result is between R$ 100 and R$ 150 000.
 - Means are sensitive to large corporate deals; prefer medians.
+- `area_m2` / `preco_m2` use IPTU *built* area, which for condominium units includes the share of common areas and parking — so R$/m² runs below the private-area R$/m² quoted in listings. The dashboard has an optional per-building *privativa ÷ construída* factor.
+- **Distrito / subprefeitura** come from `geo/quadras_geo.parquet`: the centroid of each fiscal block (setor + quadra, the first 6 SQL digits) from the [GeoSampa](https://geosampa.prefeitura.sp.gov.br/) WFS, spatially joined to the official 96 distritos / 32 subprefeituras. ~99.95% of rows match. The raw `bairro` field is free text and empty for ~half the rows.
 - Exact re-published DTI rows (same property, date, value and street) are deduplicated before the parquet is written.
 
 ## License / attribution
