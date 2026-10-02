@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import urllib.request
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -479,22 +478,19 @@ def write_partitions(full: pd.DataFrame, out_dir: Path) -> None:
         write_parquet(full.loc[full["ano_pag"] == y], out_dir / f"itbi_{int(y)}.parquet")
 
 
-IPCA_URL = "https://apisidra.ibge.gov.br/values/t/1737/n1/all/v/2266/p/all?formato=json"
+IPCA_INDEX = ROOT / "ref" / "ipca_index.json"  # committed; refreshed by update_ipca.py
 
 
-def fetch_ipca_factors() -> dict | None:
+def ipca_factors() -> dict | None:
     """
-    IPCA number index (IBGE SIDRA table 1737, var 2266; Dec/1993 = 100) →
-    per-month factor that brings a value from that month to the latest
-    month's prices. Months from the Real onwards (1994-07); None on failure.
+    Per-month factor that brings a value from that month to the latest IPCA
+    month's prices, from the committed index (no network at build time).
+    Months from the Real onwards (1994-07); None if the file is missing.
     """
-    try:
-        with urllib.request.urlopen(IPCA_URL, timeout=60) as r:
-            rows = json.load(r)[1:]  # first row is the header
-        index = {f"{r['D3C'][:4]}-{r['D3C'][4:]}": float(r["V"]) for r in rows if r["V"] not in ("...", "-", "")}
-    except Exception as e:
-        print(f"WARNING: IPCA unavailable ({e}) — dashboard will offer nominal values only")
+    if not IPCA_INDEX.exists():
+        print(f"WARNING: {IPCA_INDEX} missing — dashboard will offer nominal values only")
         return None
+    index = json.loads(IPCA_INDEX.read_text())["index"]
     base = max(index)
     return {
         "base": base,
@@ -527,7 +523,7 @@ def build_manifest(out_dir: Path) -> dict:
         "years": entries,
         "ipca": None,
     }
-    ipca = fetch_ipca_factors()
+    ipca = ipca_factors()
     if ipca:
         (out_dir / "ipca.json").write_text(json.dumps(ipca))
         manifest["ipca"] = {"file": "ipca.json", "base": ipca["base"]}

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # commits ref/ipca_index.json when IBGE publishes new months
   pages: write
   id-token: write
 
@@ -33,6 +33,12 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      # The IPCA index is committed (ref/ipca_index.json) so the build never
+      # depends on IBGE being up; this only adds newly published months.
+      - name: Refresh IPCA index
+        continue-on-error: true
+        run: python scripts/update_ipca.py
 
       - name: Compute cache keys (recent data changes ~monthly)
         id: datekey
@@ -142,6 +148,18 @@ jobs:
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
+
+      # Pushes made with the workflow's token don't trigger another run
+      - name: Commit refreshed IPCA index
+        continue-on-error: true
+        run: |
+          if ! git diff --quiet -- ref/ipca_index.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ref/ipca_index.json
+            git commit -m "Update IPCA index (IBGE SIDRA) to $(python -c "import json; print(max(json.load(open('ref/ipca_index.json'))['index']))")"
+            git push
+          fi
 
   deploy:
     needs: build
