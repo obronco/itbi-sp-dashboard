@@ -752,6 +752,7 @@
     const MAP_MIN_N = 3; // price metrics need a few deals per cell to mean anything
     let map = null, mapLoaded = false, mapState = null, mapLastSize = null, mapLastFitW = null;
     let mapBusy = false, mapPending = false;
+    let mapCells = null; // last fetched cells: { cells, size, metric }
 
     // Cell edge in degrees, halving per zoom level: ~2 km at city zoom → ~70 m close up
     function mapCellSize() {
@@ -778,14 +779,16 @@
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
       map.on("load", () => {
         map.addSource("cells", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-        // Cells go under the basemap's labels so street names stay readable, and
-        // fade as you zoom in, where the streets themselves matter more
-        const firstLabel = map.getStyle().layers.find(l => l.type === "symbol")?.id;
+        // Cells go above roads/buildings but under the trailing block of labels
+        // (street/place names), and fade as you zoom in where the streets matter more
+        const styleLayers = map.getStyle().layers;
+        const lastShape = styleLayers.findLastIndex(l => l.type !== "symbol");
+        const firstLabel = styleLayers[lastShape + 1]?.id;
         map.addLayer({
           id: "cells-fill", type: "fill", source: "cells",
           paint: {
             "fill-color": ["get", "color"],
-            "fill-opacity": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 13, 0.45, 16, 0.3],
+            "fill-opacity": ["interpolate", ["linear"], ["zoom"], 10, 0.65, 13, 0.5, 16, 0.4],
           },
         }, firstLabel);
         // Thin surface-colored outline keeps adjacent cells apart
@@ -829,7 +832,11 @@
         map.getCanvas().style.cursor = "";
         popup.remove();
       });
-      map.on("zoomend", () => { if (mapCellSize() !== mapLastSize) scheduleMap(); });
+      // Zooming across a level changes the cell size (new query); otherwise just recolor
+      map.on("moveend", () => {
+        if (mapCellSize() !== mapLastSize) scheduleMap();
+        else paintMap();
+      });
       $("#map-metric").addEventListener("change", () => scheduleMap());
     }
 
@@ -891,11 +898,26 @@
         m2: r => r.n_m2 >= MAP_MIN_N ? r.med_m2 : null,
         val: r => r.n >= MAP_MIN_N ? r.med_val : null,
       }[metric];
-      const cells = rows.map(r => ({ ...r, v: valueOf(r) })).filter(r => r.v != null);
+      mapCells = { cells: rows.map(r => ({ ...r, v: valueOf(r) })).filter(r => r.v != null), size, metric };
+      paintMap();
+    }
 
-      // Quantile classes over the visible cells; collapse duplicate breaks
-      // (lots of cells with exactly 1 deal) so every class is real
-      const sorted = cells.map(c => c.v).sort((a, b) => a - b);
+    // Color classes come from the cells currently in view, so zooming into an
+    // expensive area still shows contrast inside it. Re-run on every pan/zoom
+    // (no query — just recolors the cells already fetched).
+    function paintMap() {
+      if (!mapCells) return;
+      const { cells, size, metric } = mapCells;
+      const b = map.getBounds();
+      const visible = cells.filter(c => {
+        const lat = (c.gy + 0.5) * size, lon = (c.gx + 0.5) * size;
+        return lat >= b.getSouth() && lat <= b.getNorth() && lon >= b.getWest() && lon <= b.getEast();
+      });
+      const basis = visible.length ? visible : cells;
+
+      // Quantile classes; collapse duplicate breaks (lots of cells with
+      // exactly 1 deal) so every class is real
+      const sorted = basis.map(c => c.v).sort((a, b) => a - b);
       const breaks = [...new Set(MAP_RAMP.slice(1).map((_, i) =>
         sorted[Math.floor(((i + 1) / MAP_RAMP.length) * sorted.length)]).filter(x => x > sorted[0]))];
       // Fewer classes than colors → spread them evenly across the ramp
@@ -903,6 +925,12 @@
       const ramp = Array.from({ length: breaks.length + 1 }, (_, i) =>
         MAP_RAMP[breaks.length ? Math.round(i * last / breaks.length) : last]);
       const classOf = v => { let i = 0; while (i < breaks.length && v >= breaks[i]) i++; return i; };
+
+      // Panning within an area usually keeps the same classes: skip the
+      // (costly, with many cells) re-upload when nothing would change
+      const key = JSON.stringify([breaks, cells.length, sorted[0]]);
+      if (key === mapCells.paintedKey) return;
+      mapCells.paintedKey = key;
 
       const features = cells.map(c => {
         const x = c.gx * size, y = c.gy * size;
@@ -926,7 +954,8 @@
         ? `<span>${metricLabel}:</span>` +
           ramp.map((col, i) => `<span class="sw"><i style="background:${col}"></i>${i === 0 ? "" : "≥ "}${fmtV(edges[i])}</span>`).join("") +
           `<span>· célula ≈ ${meters >= 1000 ? fmt(meters / 1000, 1) + " km" : meters + " m"}` +
-          (metric === "n" ? "" : ` · só células com ≥ ${MAP_MIN_N} transações`) + `</span>`
+          (metric === "n" ? "" : ` · só células com ≥ ${MAP_MIN_N} transações`) +
+          ` · cores relativas à área visível</span>`
         : `<span>Nenhuma transação com localização para os filtros atuais.</span>`;
     }
 
