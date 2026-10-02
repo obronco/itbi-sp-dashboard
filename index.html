@@ -6,6 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ITBI São Paulo — Dashboard (5 anos)</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
   <style>
     :root {
       --bg: #0f1419;
@@ -131,6 +133,50 @@
       }
     }
 
+    #map {
+      height: 480px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .map-legend {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 0.9rem;
+      margin-top: 0.6rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .map-legend .sw {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .map-legend .sw i {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+
+    .maplibregl-popup-content {
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      font-size: 0.8rem;
+      line-height: 1.5;
+      padding: 0.5rem 0.7rem;
+    }
+
+    .maplibregl-popup-tip {
+      display: none;
+    }
+
     .inline-select {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -216,6 +262,15 @@
       .kpis {
         grid-template-columns: repeat(2, 1fr);
       }
+
+      .kpi {
+        min-width: 0;
+        padding: 0.8rem;
+      }
+
+      .kpi .value {
+        font-size: 1.1rem;
+      }
     }
 
     .kpi {
@@ -257,6 +312,9 @@
     }
 
     .card {
+      /* grid items default to min-width:auto, so the 9-column transaction
+         table would push every card past the viewport on phones */
+      min-width: 0;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -275,7 +333,7 @@
       grid-column: 1 / -1;
     }
 
-    canvas {
+    .card > canvas {
       max-height: 260px;
       width: 100% !important;
     }
@@ -457,6 +515,18 @@
     <div class="kpis" id="kpis"></div>
 
     <div class="grid">
+      <div class="card full">
+        <h3 style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">Mapa —
+          <select id="map-metric" class="inline-select">
+            <option value="n">transações</option>
+            <option value="m2">mediana R$/m²</option>
+            <option value="val">mediana do valor</option>
+          </select>
+          por célula
+        </h3>
+        <div id="map"></div>
+        <div id="map-legend" class="map-legend"></div>
+      </div>
       <div class="card">
         <h3>Volume e VGV mensal (pagamento)</h3>
         <canvas id="chart-ts"></canvas>
@@ -555,6 +625,154 @@
 
     let db, conn;
     let charts = {};
+
+    // ---------- Map: grid of cells aggregated in DuckDB, drawn with MapLibre ----------
+    // Sequential blue, dark (near zero, recedes into the dark basemap) → light (high)
+    const MAP_RAMP = ["#104281", "#1c5cab", "#2a78d6", "#5598e7", "#86b6ef", "#b7d3f6", "#cde2fb"];
+    const MAP_MIN_N = 3; // price metrics need a few deals per cell to mean anything
+    let map = null, mapLoaded = false, mapState = null, mapLastSize = null, mapLastFitW = null;
+    let mapBusy = false, mapPending = false;
+
+    // Cell edge in degrees, halving per zoom level: ~2 km at city zoom → ~70 m close up
+    function mapCellSize() {
+      const z = Math.floor(map.getZoom());
+      return Math.max(0.000625, 0.02 / 2 ** Math.max(0, z - 10));
+    }
+
+    function initMap() {
+      if (!window.maplibregl) { $("#map").textContent = "Mapa indisponível."; return; }
+      try {
+        map = new maplibregl.Map({
+          container: "map",
+          style: "https://tiles.openfreemap.org/styles/dark",
+          center: [-46.63, -23.6],
+          zoom: 9.5,
+          attributionControl: { compact: true },
+        });
+      } catch (e) {
+        console.warn(e);
+        map = null;
+        $("#map").textContent = "Mapa indisponível (WebGL desativado?).";
+        return;
+      }
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+      map.on("load", () => {
+        map.addSource("cells", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        map.addLayer({
+          id: "cells-fill", type: "fill", source: "cells",
+          paint: { "fill-color": ["get", "color"], "fill-opacity": 0.85 },
+        });
+        // Thin surface-colored outline keeps adjacent cells apart
+        map.addLayer({
+          id: "cells-line", type: "line", source: "cells",
+          paint: { "line-color": "#0f1419", "line-width": 0.6 },
+        });
+        mapLoaded = true;
+        scheduleMap();
+      });
+
+      const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 8 });
+      map.on("mousemove", "cells-fill", (e) => {
+        map.getCanvas().style.cursor = "pointer";
+        const p = e.features[0].properties;
+        const m2Label = areaFactor() > 0 ? "R$/m² privativo" : "R$/m² construído";
+        popup.setLngLat(e.lngLat).setHTML(
+          `<b>${fmt(p.n)}</b> transações<br>` +
+          `Mediana valor: ${fmtMoney(p.med_val)}<br>` +
+          `Mediana ${m2Label}: ${p.n_m2 >= MAP_MIN_N ? fmtMoney(p.med_m2) : "—"}`
+        ).addTo(map);
+      });
+      map.on("mouseleave", "cells-fill", () => {
+        map.getCanvas().style.cursor = "";
+        popup.remove();
+      });
+      map.on("zoomend", () => { if (mapCellSize() !== mapLastSize) scheduleMap(); });
+      $("#map-metric").addEventListener("change", () => scheduleMap());
+    }
+
+    // Zoom to where the filtered rows are (2nd–98th percentile, so a stray SQL
+    // on the other side of town doesn't zoom the map out)
+    async function fitMap(w) {
+      const [b] = await q(`
+    SELECT quantile_cont(lat, 0.02) s, quantile_cont(lat, 0.98) n,
+           quantile_cont(lon, 0.02) w, quantile_cont(lon, 0.98) e, count(lat) c
+    FROM v_base WHERE ${w} AND lat IS NOT NULL`);
+      if (!b.c) return;
+      const pad = 0.003;
+      map.fitBounds([[b.w - pad, b.s - pad], [b.e + pad, b.n + pad]], { padding: 30, maxZoom: 15, duration: 0 });
+    }
+
+    async function scheduleMap() {
+      if (!mapLoaded || !mapState) return;
+      if (mapBusy) { mapPending = true; return; }
+      mapBusy = true;
+      try {
+        do {
+          mapPending = false;
+          await drawMap();
+        } while (mapPending);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        mapBusy = false;
+      }
+    }
+
+    async function drawMap() {
+      const { w, m2 } = mapState;
+      const size = mapCellSize();
+      mapLastSize = size;
+      const metric = $("#map-metric").value;
+      const rows = await q(`
+    SELECT floor(lat / ${size})::INTEGER AS gy, floor(lon / ${size})::INTEGER AS gx,
+           count(*) AS n, median(valor_transacao) AS med_val,
+           median(${m2}) AS med_m2, count(preco_m2) AS n_m2
+    FROM v_base WHERE ${w} AND lat IS NOT NULL
+    GROUP BY 1, 2`);
+
+      const valueOf = {
+        n: r => r.n,
+        m2: r => r.n_m2 >= MAP_MIN_N ? r.med_m2 : null,
+        val: r => r.n >= MAP_MIN_N ? r.med_val : null,
+      }[metric];
+      const cells = rows.map(r => ({ ...r, v: valueOf(r) })).filter(r => r.v != null);
+
+      // Quantile classes over the visible cells; collapse duplicate breaks
+      // (lots of cells with exactly 1 deal) so every class is real
+      const sorted = cells.map(c => c.v).sort((a, b) => a - b);
+      const breaks = [...new Set(MAP_RAMP.slice(1).map((_, i) =>
+        sorted[Math.floor(((i + 1) / MAP_RAMP.length) * sorted.length)]).filter(x => x > sorted[0]))];
+      // Fewer classes than colors → spread them evenly across the ramp
+      const last = MAP_RAMP.length - 1;
+      const ramp = Array.from({ length: breaks.length + 1 }, (_, i) =>
+        MAP_RAMP[breaks.length ? Math.round(i * last / breaks.length) : last]);
+      const classOf = v => { let i = 0; while (i < breaks.length && v >= breaks[i]) i++; return i; };
+
+      const features = cells.map(c => {
+        const x = c.gx * size, y = c.gy * size;
+        return {
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [[[x, y], [x + size, y], [x + size, y + size], [x, y + size], [x, y]]] },
+          properties: { n: c.n, med_val: c.med_val, med_m2: c.med_m2, n_m2: c.n_m2, color: ramp[classOf(c.v)] },
+        };
+      });
+      map.getSource("cells").setData({ type: "FeatureCollection", features });
+
+      const fmtV = metric === "n" ? (v => fmt(v)) : (v => fmtCompact(Math.round(v)));
+      const edges = [sorted[0], ...breaks];
+      const metricLabel = {
+        n: "Transações",
+        m2: areaFactor() > 0 ? "Mediana R$/m² privativo" : "Mediana R$/m² construído",
+        val: "Mediana do valor",
+      }[metric];
+      const meters = Math.round(size * 111000 / 10) * 10;
+      $("#map-legend").innerHTML = cells.length
+        ? `<span>${metricLabel}:</span>` +
+          ramp.map((col, i) => `<span class="sw"><i style="background:${col}"></i>${i === 0 ? "" : "≥ "}${fmtV(edges[i])}</span>`).join("") +
+          `<span>· célula ≈ ${meters >= 1000 ? fmt(meters / 1000, 1) + " km" : meters + " m"}` +
+          (metric === "n" ? "" : ` · só células com ≥ ${MAP_MIN_N} transações`) + `</span>`
+        : `<span>Nenhuma transação com localização para os filtros atuais.</span>`;
+    }
 
     async function initDuckDB() {
       const msg = $("#load-msg");
@@ -1090,6 +1308,15 @@
         fh.textContent = "Opcional. A área do IPTU inclui áreas comuns e vagas; informe a relação do prédio para ver R$/m² privativo.";
       }
 
+      if (map) {
+        mapState = { w, m2 };
+        if (w !== mapLastFitW) {
+          mapLastFitW = w;
+          await fitMap(w);
+        }
+        scheduleMap();
+      }
+
       $("#status").textContent = `${fmt(k.n)} transações filtradas · ${fmt(performance.now() - t0)} ms`;
       $("#status").className = "status ok";
     }
@@ -1098,6 +1325,7 @@
       try {
         await initDuckDB();
         await loadFilterOptions();
+        initMap();
         $("#loading-overlay").classList.add("hidden");
         $("#status").textContent = "pronto";
         $("#status").className = "status ok";

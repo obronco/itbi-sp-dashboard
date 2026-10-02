@@ -4,7 +4,7 @@ Single-page dashboard of real-estate transactions in São Paulo with ITBI paymen
 
 - **Source**: [Prefeitura de São Paulo — Dados das Transações Imobiliárias (ITBI)](https://prefeitura.sp.gov.br/web/fazenda/w/acesso_a_informacao/31501)
 - **Lookback**: last 5 calendar years
-- **Stack**: static HTML + DuckDB-WASM + Chart.js
+- **Stack**: static HTML + DuckDB-WASM + Chart.js + MapLibre GL (basemap tiles from [OpenFreeMap](https://openfreemap.org/), no API key)
 - **Pipeline**: GitHub Actions downloads the yearly Excels, cleans them into a compact Parquet, and deploys to GitHub Pages
 
 ## Live site
