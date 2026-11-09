@@ -513,7 +513,7 @@ def build_manifest(out_dir: Path) -> dict:
     for i, f in enumerate(files):
         rows, dmax, ymax = con.sql(
             f"SELECT count(*), strftime(max(data_transacao), '%Y-%m-%d'), max(ano_mes_pag) FROM read_parquet('{f}')"
-        ).fetchone()
+        ).fetchall()[0]
         entries.append({"year": int(f.stem.split("_")[1]), "file": f.name, "rows": rows,
                         "bytes": f.stat().st_size, "default": i < N_YEARS, "_dmax": dmax, "_ymax": ymax})
     manifest = {
